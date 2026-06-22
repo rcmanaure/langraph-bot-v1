@@ -6,6 +6,7 @@ import sentry_sdk
 from fastapi import FastAPI
 
 from app.config import settings
+from app.routes.operator import router as operator_router
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+app.include_router(operator_router)
 
 
 @app.get("/health")
