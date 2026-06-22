@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String, Text, func
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String, Text, func
 from sqlalchemy.ext.hybrid import hybrid_property
 
 from app.models.base import Base

@@ -1,4 +1,5 @@
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+
 from app.config import settings
 
 
@@ -6,8 +7,9 @@ def get_chat_llm(fallback: bool = False) -> ChatOpenAI:
     model = (settings.openai_fallback_model if fallback else None) or settings.openai_model
     return ChatOpenAI(
         model=model,
-        api_key=settings.openai_api_key,
-        base_url=settings.openai_base_url,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        default_headers={"HTTP-Referer": f"https://{settings.app_domain}"},
     )
 
 

@@ -2,7 +2,7 @@ from langchain_core.messages import HumanMessage
 
 from app.config import settings
 from app.db import AsyncSessionLocal
-from app.services.rag import retrieve_chunks, cap_chunks_to_tokens
+from app.services.rag import cap_chunks_to_tokens, retrieve_chunks
 from app.state import AgentState
 
 

@@ -1,7 +1,7 @@
 import logging
 
 import tiktoken
-from langchain_core.messages import AIMessage, SystemMessage, trim_messages
+from langchain_core.messages import SystemMessage, trim_messages
 from sqlalchemy import text
 
 from app.config import settings

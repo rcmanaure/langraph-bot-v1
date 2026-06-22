@@ -77,7 +77,8 @@ async def _cleanup_stuck_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.scheduler import start as start_scheduler, stop as stop_scheduler
+    from app.scheduler import start as start_scheduler
+    from app.scheduler import stop as stop_scheduler
 
     await _cleanup_stuck_jobs()
 

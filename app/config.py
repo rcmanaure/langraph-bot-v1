@@ -1,5 +1,5 @@
-from pydantic_settings import BaseSettings
 from pydantic import ConfigDict
+from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -11,16 +11,16 @@ class Settings(BaseSettings):
     db_max_overflow: int = 5
     db_checkpoint_pool_size: int = 5
 
-    # LLM
-    openai_api_key: str = ""
-    openai_base_url: str = "https://api.openai.com/v1"
-    openai_model: str = "gpt-4o-mini"
-    openai_fallback_model: str = ""
+    # Chat LLM — routed through OpenRouter
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openai_model: str = "openrouter/free"
+    openai_fallback_model: str = "deepseek/deepseek-v4-flash"
 
-    # Embedding (defaults to openai_* when not set)
+    # Embeddings — same key/base as chat; override only if using a different provider
     embedding_base_url: str = ""
     embedding_api_key: str = ""
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "openai/text-embedding-3-small"
     embedding_dim: int = 1536
 
     # RAG tuning
@@ -68,11 +68,11 @@ class Settings(BaseSettings):
 
     @property
     def effective_embedding_base_url(self) -> str:
-        return self.embedding_base_url or self.openai_base_url
+        return self.embedding_base_url or self.openrouter_base_url
 
     @property
     def effective_embedding_api_key(self) -> str:
-        return self.embedding_api_key or self.openai_api_key
+        return self.embedding_api_key or self.openrouter_api_key
 
 
 settings = Settings()
