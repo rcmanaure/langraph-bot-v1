@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import asynccontextmanager
 
 import sentry_sdk
@@ -7,6 +8,25 @@ from fastapi import FastAPI
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _setup_langsmith() -> None:
+    """Bridge pydantic settings → os.environ so the LangSmith SDK sees them.
+
+    pydantic-settings reads .env but does not populate os.environ; the SDK reads
+    os.environ directly, so without this bridge local dev tracing silently no-ops.
+    setdefault preserves values already set in the actual OS environment.
+    """
+    if settings.langchain_tracing_v2:
+        os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+    if settings.langchain_api_key:
+        os.environ.setdefault("LANGCHAIN_API_KEY", settings.langchain_api_key)
+    if settings.langchain_project:
+        os.environ.setdefault("LANGCHAIN_PROJECT", settings.langchain_project)
+    if settings.langsmith_hide_inputs:
+        os.environ.setdefault("LANGSMITH_HIDE_INPUTS", "true")
+    if settings.langsmith_hide_outputs:
+        os.environ.setdefault("LANGSMITH_HIDE_OUTPUTS", "true")
 
 
 @asynccontextmanager
@@ -40,6 +60,7 @@ def _setup_sentry() -> None:
 
 
 def create_app() -> FastAPI:
+    _setup_langsmith()
     _setup_sentry()
     return FastAPI(title="LangGraph RAG Bot", lifespan=lifespan)
 
