@@ -1,0 +1,8 @@
+Generic single-database configuration with async SQLAlchemy.
+
+Run migrations: alembic upgrade head
+Create new migration: alembic revision --autogenerate -m "description"
+
+NOTE: LangGraph checkpoint tables (langgraph_checkpoints, langgraph_writes,
+langgraph_migrations) are NOT managed here — they are created by
+checkpointer.setup() in the FastAPI lifespan.
