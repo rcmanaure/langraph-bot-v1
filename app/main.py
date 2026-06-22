@@ -8,6 +8,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app.channels.telegram import router as telegram_router
+from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.middleware.security import add_security_middleware
 from app.routes.admin import router as admin_router
@@ -75,6 +77,8 @@ async def _cleanup_stuck_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.scheduler import start as start_scheduler, stop as stop_scheduler
+
     await _cleanup_stuck_jobs()
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -94,8 +98,10 @@ async def lifespan(app: FastAPI):
         from app.graph.builder import build_graph
 
         app.state.graph = build_graph(checkpointer=checkpointer)
+        start_scheduler()
         logger.info("langgraph_ready")
         yield
+        stop_scheduler()
 
     logger.info("shutdown_complete")
 
@@ -118,6 +124,8 @@ def create_app() -> FastAPI:
 app = create_app()
 app.include_router(operator_router)
 app.include_router(admin_router)
+app.include_router(telegram_router)
+app.include_router(whatsapp_router)
 
 
 @app.get("/health")

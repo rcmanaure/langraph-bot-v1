@@ -15,29 +15,50 @@ logger = logging.getLogger(__name__)
 _enc = tiktoken.get_encoding("cl100k_base")
 
 _RAG_SYSTEM = """\
-You are a helpful assistant. Answer the user's question using ONLY the provided context.
-If the context doesn't contain enough information, say so honestly. Do not invent information.
+Eres un asistente de {expertise}.
+Responde la pregunta del usuario usando ÚNICAMENTE el contexto proporcionado.
+Si el contexto no contiene suficiente información, dilo honestamente.
+No inventes información.{contact_hint}
 
-Context:
+Contexto:
 {context}
 """
 
 _CATALOG_SYSTEM = """\
-You are a helpful assistant. List ALL items from the catalog below, organized by section.
-Do not omit any item. Use the exact names and prices from the catalog.
+Eres un asistente de {expertise}.
+Lista TODOS los ítems del catálogo a continuación, organizados por sección.
+No omitas ningún ítem. Usa los nombres y precios exactos del catálogo.{contact_hint}
 
-Catalog:
+Catálogo:
 {context}
 """
+
+_OFF_TOPIC_MSG = "Lo siento, no puedo ayudarte con eso. Soy un asistente especializado en {expertise}."
+
+_FALLBACK = "Lo siento, no pude procesar tu consulta en este momento. Por favor intenta de nuevo."
 
 
 def _token_counter(msgs) -> int:
     return sum(len(_enc.encode(m.content if isinstance(m.content, str) else "")) for m in msgs)
 
 
+async def _load_tenant(slug: str) -> dict:
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            text("SELECT expertise_area, contact_url FROM tenants WHERE slug = :s"),
+            {"s": slug},
+        )).first()
+    if not row:
+        return {"expertise": "este negocio", "contact_hint": ""}
+    expertise = row.expertise_area or "este negocio"
+    contact_hint = (f"\nSi necesitas más ayuda, contacta: {row.contact_url}" if row.contact_url else "")
+    return {"expertise": expertise, "contact_hint": contact_hint}
+
+
 async def generate(state: AgentState) -> dict:
     chunks = list(state.get("retrieved_chunks") or [])
     is_catalog = state.get("triage_decision") == "catalog"
+    tenant_ctx = await _load_tenant(state["tenant_id"])
 
     if is_catalog and not chunks:
         async with AsyncSessionLocal() as db:
@@ -52,8 +73,9 @@ async def generate(state: AgentState) -> dict:
             chunks = [{"content": r.content} for r in result.fetchall()]
             chunks = cap_chunks_to_tokens(chunks, settings.retrieval_max_tokens)
 
-    context = "\n\n---\n\n".join(c["content"] for c in chunks) if chunks else "No context available."
-    system = (_CATALOG_SYSTEM if is_catalog else _RAG_SYSTEM).format(context=context)
+    context = "\n\n---\n\n".join(c["content"] for c in chunks) if chunks else "Sin contexto disponible."
+    template = _CATALOG_SYSTEM if is_catalog else _RAG_SYSTEM
+    system = template.format(context=context, **tenant_ctx)
 
     trimmed = trim_messages(
         state["messages"],
