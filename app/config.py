@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     secret_key: str = "changeme"
     fernet_key: str = ""
     csrf_secret: str = ""
+    operator_token: str = ""  # if set, used for operator/admin auth instead of secret_key
 
     # LangSmith
     langchain_tracing_v2: bool = False

@@ -9,6 +9,7 @@ from app.config import settings
 from app.db import AsyncSessionLocal
 from app.models import DocumentChunk, IndexJob, IndexJobStatus
 from app.services.llm import get_embeddings
+from app.services.security import scan_chunk_for_injection
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,11 @@ def _chunk_page(text: str, source: str, page: int) -> list[dict]:
             current = para
     if current:
         merged.append(current)
-    return [{"content": c.strip(), "source": source, "page": page} for c in merged if len(c.strip()) > 50]
+    return [
+        {"content": c.strip(), "source": source, "page": page}
+        for c in merged
+        if len(c.strip()) > 50 and not scan_chunk_for_injection(c)
+    ]
 
 
 async def run_index_job(

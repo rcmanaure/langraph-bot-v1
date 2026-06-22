@@ -10,6 +10,10 @@ from app.graph.nodes.validate_output import validate_output
 from app.state import AgentState
 
 
+def _route_after_validate(state: AgentState) -> str:
+    return "respond" if state.get("blocked") else "retrieve"
+
+
 def _route_triage(state: AgentState) -> str:
     d = state.get("triage_decision", "rag")
     if d in ("rag", "catalog"):
@@ -31,7 +35,11 @@ def build_graph(checkpointer=None):
     g.add_node("respond", respond)
 
     g.add_edge(START, "validate")
-    g.add_edge("validate", "retrieve")
+    g.add_conditional_edges(
+        "validate",
+        _route_after_validate,
+        {"retrieve": "retrieve", "respond": "respond"},
+    )
     g.add_edge("retrieve", "triage")
     g.add_conditional_edges(
         "triage",

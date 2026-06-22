@@ -3,10 +3,14 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from sqlalchemy import text
 
 from app.auth import verify_operator_key
 from app.db import AsyncSessionLocal
+
+_limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter(prefix="/operator", tags=["operator"])
 
@@ -21,6 +25,7 @@ class ResumeRequest(BaseModel):
 
 
 @router.post("/resume/{thread_id}")
+@_limiter.limit("20/minute")
 async def resume(
     thread_id: str,
     body: ResumeRequest,

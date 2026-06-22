@@ -4,12 +4,18 @@ from contextlib import asynccontextmanager
 
 import sentry_sdk
 from fastapi import FastAPI
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from app.config import settings
+from app.middleware.security import add_security_middleware
 from app.routes.admin import router as admin_router
 from app.routes.operator import router as operator_router
 
 logger = logging.getLogger(__name__)
+
+limiter = Limiter(key_func=get_remote_address)
 
 
 def _setup_langsmith() -> None:
@@ -38,6 +44,7 @@ async def _cleanup_stuck_jobs() -> None:
     The job_id FK on document_chunks makes this a targeted DELETE, not a full scan.
     """
     from sqlalchemy import text
+
     from app.db import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
@@ -101,7 +108,11 @@ def _setup_sentry() -> None:
 def create_app() -> FastAPI:
     _setup_langsmith()
     _setup_sentry()
-    return FastAPI(title="LangGraph RAG Bot", lifespan=lifespan)
+    application = FastAPI(title="LangGraph RAG Bot", lifespan=lifespan)
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    add_security_middleware(application)
+    return application
 
 
 app = create_app()
