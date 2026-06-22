@@ -1,13 +1,11 @@
-import hashlib
-import hmac
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from app.config import settings
+from app.auth import verify_operator_key
 from app.db import AsyncSessionLocal
 
 router = APIRouter(prefix="/operator", tags=["operator"])
@@ -22,19 +20,12 @@ class ResumeRequest(BaseModel):
     text: str
 
 
-def _verify_operator_key(x_operator_key: str = Header(...)) -> None:
-    # ponytail: uses SECRET_KEY for now — T8 replaces with dedicated operator tokens
-    expected = hashlib.sha256(settings.secret_key.encode()).hexdigest()
-    if not hmac.compare_digest(x_operator_key, expected):
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
 @router.post("/resume/{thread_id}")
 async def resume(
     thread_id: str,
     body: ResumeRequest,
     request: Request,
-    _: None = Depends(_verify_operator_key),
+    _: None = Depends(verify_operator_key),
 ):
     if not _THREAD_RE.match(thread_id):
         raise HTTPException(status_code=422, detail="Invalid thread_id format")
@@ -79,7 +70,7 @@ async def resume(
 
 @router.get("/pending")
 async def list_pending(
-    _: None = Depends(_verify_operator_key),
+    _: None = Depends(verify_operator_key),
 ):
     """List threads currently waiting for operator response."""
     async with AsyncSessionLocal() as db:

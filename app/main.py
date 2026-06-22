@@ -6,6 +6,7 @@ import sentry_sdk
 from fastapi import FastAPI
 
 from app.config import settings
+from app.routes.admin import router as admin_router
 from app.routes.operator import router as operator_router
 
 logger = logging.getLogger(__name__)
@@ -30,8 +31,45 @@ def _setup_langsmith() -> None:
         os.environ.setdefault("LANGSMITH_HIDE_OUTPUTS", "true")
 
 
+async def _cleanup_stuck_jobs() -> None:
+    """Delete partial chunks and mark RUNNING/PENDING jobs as FAILED on startup.
+
+    Prevents partial embedding corruption if the process was killed mid-indexing.
+    The job_id FK on document_chunks makes this a targeted DELETE, not a full scan.
+    """
+    from sqlalchemy import text
+    from app.db import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as db:
+        rows = await db.execute(
+            text("SELECT id FROM index_jobs WHERE status IN ('RUNNING', 'PENDING')")
+        )
+        stuck = [str(r.id) for r in rows.fetchall()]
+        if not stuck:
+            return
+
+        for job_id in stuck:
+            await db.execute(
+                text("DELETE FROM document_chunks WHERE job_id = :jid"),
+                {"jid": job_id},
+            )
+        await db.execute(
+            text("""
+                UPDATE index_jobs
+                   SET status = 'FAILED',
+                       error_message = 'Startup cleanup: interrupted by server restart',
+                       updated_at = now()
+                 WHERE status IN ('RUNNING', 'PENDING')
+            """)
+        )
+        await db.commit()
+        logger.info("startup_cleanup_done stuck_jobs=%d", len(stuck))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await _cleanup_stuck_jobs()
+
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
     from psycopg_pool import AsyncConnectionPool
 
@@ -68,6 +106,7 @@ def create_app() -> FastAPI:
 
 app = create_app()
 app.include_router(operator_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")
