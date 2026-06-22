@@ -6,6 +6,7 @@ from app.graph.nodes.respond import respond
 from app.graph.nodes.retrieve import retrieve
 from app.graph.nodes.triage import triage
 from app.graph.nodes.validate import validate
+from app.graph.nodes.validate_output import validate_output
 from app.state import AgentState
 
 
@@ -25,6 +26,7 @@ def build_graph(checkpointer=None):
     g.add_node("retrieve", retrieve)
     g.add_node("triage", triage)
     g.add_node("generate", generate)
+    g.add_node("validate_output", validate_output)
     g.add_node("interrupt_node", interrupt_node)
     g.add_node("respond", respond)
 
@@ -36,7 +38,8 @@ def build_graph(checkpointer=None):
         _route_triage,
         {"generate": "generate", "interrupt_node": "interrupt_node", "respond": "respond"},
     )
-    g.add_edge("generate", "respond")
+    g.add_edge("generate", "validate_output")
+    g.add_edge("validate_output", "respond")
     g.add_edge("interrupt_node", "respond")
     g.add_edge("respond", END)
 
