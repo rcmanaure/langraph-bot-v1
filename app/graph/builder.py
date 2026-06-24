@@ -16,11 +16,11 @@ def _route_after_validate(state: AgentState) -> str:
 
 def _route_triage(state: AgentState) -> str:
     d = state.get("triage_decision", "rag")
-    if d in ("rag", "catalog"):
+    if d in ("rag", "catalog", "off_topic"):
         return "generate"
     if d == "human":
         return "interrupt_node"
-    return "respond"  # off_topic
+    return "generate"
 
 
 def build_graph(checkpointer=None):

@@ -16,11 +16,16 @@ _enc = tiktoken.get_encoding("cl100k_base")
 
 _TRIAGE_PROMPT = """\
 Classify the user's latest message into ONE category:
-- "rag": specific question that needs searching the knowledge base
-- "catalog": wants a full list/catalog/prices of all products or services
+- "rag": ANY question about a product, service, price, exam, procedure, study, biopsy, analysis, cost, or anything the business might offer — even if vague
+- "catalog": explicitly wants a FULL list/catalog/ALL products or services
 - "human": explicitly asks to speak with a human, operator, or agent
-- "off_topic": completely unrelated to the business
+- "off_topic": ONLY if completely unrelated (politics, weather, sports, jokes, coding questions)
 
+IMPORTANT: Medical terms, body parts, lab tests, procedures, and prices are ALWAYS "rag".
+Examples of "rag": "biopsia de pulmon", "cuanto cuesta", "riñon", "análisis de sangre", "histología"
+Examples of "off_topic": "quien ganó el partido", "como programo en python", "chiste"
+
+When in doubt → "rag". Default is "rag".
 Reply ONLY with JSON: {"decision": "<category>"}
 """
 

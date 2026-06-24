@@ -1,7 +1,7 @@
 import logging
 
 import tiktoken
-from langchain_core.messages import SystemMessage, trim_messages
+from langchain_core.messages import AIMessage, SystemMessage, trim_messages
 from sqlalchemy import text
 
 from app.config import settings
@@ -14,13 +14,23 @@ logger = logging.getLogger(__name__)
 
 _enc = tiktoken.get_encoding("cl100k_base")
 
+_FORMAT_HINT = """
+Formato de respuesta (Telegram):
+- Usa texto plano con emojis ocasionales si ayuda a la claridad.
+- Listas con guión (- item), nunca tablas markdown.
+- Negritas con *texto* solo para énfasis clave, sin encabezados con #.
+- Si hay estudios relacionados en el contexto, inclúyelos al final como lista con sus precios."""
+
 _RAG_SYSTEM = """\
 Eres un asistente de {expertise}.
-Responde la pregunta del usuario usando ÚNICAMENTE el contexto proporcionado.
-Si el contexto no contiene suficiente información, dilo honestamente.
-No inventes información.{contact_hint}
-
-Contexto:
+Responde la pregunta del usuario usando ÚNICAMENTE el contexto proporcionado más abajo.
+REGLAS ESTRICTAS:
+- Si el contexto no menciona el procedimiento o precio específico preguntado, di "No tengo información sobre ese procedimiento específico en este momento."
+- NO uses respuestas anteriores de la conversación como referencia de precios.
+- NO inventes precios ni procedimientos.
+- Cada pregunta debe responderse basándose SOLO en el contexto actual, no en patrones de respuestas previas.{contact_hint}
+{format_hint}
+Contexto actual:
 {context}
 """
 
@@ -28,7 +38,7 @@ _CATALOG_SYSTEM = """\
 Eres un asistente de {expertise}.
 Lista TODOS los ítems del catálogo a continuación, organizados por sección.
 No omitas ningún ítem. Usa los nombres y precios exactos del catálogo.{contact_hint}
-
+{format_hint}
 Catálogo:
 {context}
 """
@@ -57,8 +67,16 @@ async def _load_tenant(slug: str) -> dict:
 
 async def generate(state: AgentState) -> dict:
     chunks = list(state.get("retrieved_chunks") or [])
-    is_catalog = state.get("triage_decision") == "catalog"
+    decision = state.get("triage_decision", "rag")
+    is_catalog = decision == "catalog"
     tenant_ctx = await _load_tenant(state["tenant_id"])
+
+    logger.info("generate_called decision=%s chunks=%d", decision, len(chunks))
+
+    if decision == "off_topic":
+        content = _OFF_TOPIC_MSG.format(**tenant_ctx)
+        msg = AIMessage(content=content)
+        return {"answer": content, "messages": [msg]}
 
     if is_catalog and not chunks:
         async with AsyncSessionLocal() as db:
@@ -75,7 +93,7 @@ async def generate(state: AgentState) -> dict:
 
     context = "\n\n---\n\n".join(c["content"] for c in chunks) if chunks else "Sin contexto disponible."
     template = _CATALOG_SYSTEM if is_catalog else _RAG_SYSTEM
-    system = template.format(context=context, **tenant_ctx)
+    system = template.format(context=context, format_hint=_FORMAT_HINT, **tenant_ctx)
 
     trimmed = trim_messages(
         state["messages"],
@@ -87,8 +105,10 @@ async def generate(state: AgentState) -> dict:
     )
 
     llm = get_chat_llm()
+    logger.info("generate_llm_model=%s", llm.model_name)
     try:
         response = await llm.ainvoke([SystemMessage(content=system)] + trimmed)
+        logger.info("generate_response=%s", response.content[:80])
     except Exception as exc:
         if not settings.openai_fallback_model:
             raise

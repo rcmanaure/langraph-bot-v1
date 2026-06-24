@@ -81,10 +81,15 @@ async def telegram_webhook(
         return {"ok": True}
 
     thread_id = f"tenant:{tenant_slug}:user:{user_id}:channel:telegram"
+    async with httpx.AsyncClient(timeout=5) as c:
+        await c.post(
+            f"https://api.telegram.org/bot{row.bot_token}/sendChatAction",
+            json={"chat_id": chat_id, "action": "typing"},
+        )
     try:
         result = await request.app.state.graph.ainvoke(
             {"tenant_id": tenant_slug, "thread_id": thread_id,
-             "messages": [HumanMessage(content=text_content)]},
+             "messages": [HumanMessage(content=text_content)], "answer": ""},
             config={"configurable": {"thread_id": thread_id}},
         )
         response = result.get("answer") or ""
