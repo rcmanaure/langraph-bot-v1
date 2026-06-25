@@ -81,11 +81,14 @@ async def telegram_webhook(
         return {"ok": True}
 
     thread_id = f"tenant:{tenant_slug}:user:{user_id}:channel:telegram"
-    async with httpx.AsyncClient(timeout=5) as c:
-        await c.post(
-            f"https://api.telegram.org/bot{row.bot_token}/sendChatAction",
-            json={"chat_id": chat_id, "action": "typing"},
-        )
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(
+                f"https://api.telegram.org/bot{row.bot_token}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+            )
+    except Exception:
+        pass  # typing indicator is best-effort; never block the response
     try:
         result = await request.app.state.graph.ainvoke(
             {"tenant_id": tenant_slug, "thread_id": thread_id,
@@ -95,9 +98,14 @@ async def telegram_webhook(
         response = result.get("answer") or ""
         if not response and result.get("messages"):
             response = result["messages"][-1].content
+        if not response:
+            response = "Lo siento, no pude generar una respuesta."
     except Exception:
         logger.exception("tg_graph_failed thread=%s", thread_id)
         response = "Lo siento, ocurrió un error. Por favor intenta de nuevo."
 
-    await _send(row.bot_token, chat_id, response)
+    try:
+        await _send(row.bot_token, chat_id, response)
+    except Exception:
+        logger.warning("tg_final_send_failed chat=%s", chat_id)
     return {"ok": True}
