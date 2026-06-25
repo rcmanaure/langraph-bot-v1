@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
+from app.channels.base import ChannelEvent
 from app.crypto import decrypt_value
 from app.db import AsyncSessionLocal
 
@@ -17,6 +18,57 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook", tags=["whatsapp"])
 
 _WA = "https://graph.facebook.com/v20.0"
+
+
+class WhatsAppAdapter:
+    """ChannelAdapter implementation for the WhatsApp Cloud API.
+
+    ponytail: handler below still uses direct calls; migrate when adding a 3rd channel.
+    """
+
+    channel = "whatsapp"
+
+    def __init__(
+        self,
+        tenant_slug: str,
+        phone_number_id: str | None,
+        access_token: str | None,
+        app_secret: str | None,
+    ) -> None:
+        self._slug = tenant_slug
+        self._phone_id = phone_number_id
+        self._token = access_token
+        self._secret = app_secret
+
+    async def verify(self, request: Request) -> bool:
+        if not self._secret:
+            return True  # no app_secret configured → allow (dev/permissive mode)
+        body_bytes = await request.body()
+        sig = request.headers.get("x-hub-signature-256", "").removeprefix("sha256=")
+        mac = hmac.new(self._secret.encode(), body_bytes, hashlib.sha256)
+        return hmac.compare_digest(sig, mac.hexdigest())
+
+    async def normalize(self, body: dict) -> ChannelEvent | None:
+        for entry in body.get("entry", []):
+            for change in entry.get("changes", []):
+                if change.get("field") != "messages":
+                    continue
+                for msg in change.get("value", {}).get("messages", []):
+                    if msg.get("type") == "text":
+                        from_id = msg["from"]
+                        return ChannelEvent(
+                            tenant_slug=self._slug,
+                            channel=self.channel,
+                            user_id=from_id,
+                            chat_id=from_id,
+                            text=msg["text"]["body"],
+                            thread_id=f"tenant:{self._slug}:user:{from_id}:channel:whatsapp",
+                        )
+        return None
+
+    async def send(self, event: ChannelEvent, text: str) -> None:
+        if self._token and self._phone_id:
+            await _send(self._phone_id, self._token, event.chat_id, text)
 
 
 async def _send(phone_number_id: str, token: str, to: str, body: str) -> None:

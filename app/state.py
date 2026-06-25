@@ -4,6 +4,8 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 from typing_extensions import NotRequired, TypedDict
 
+SCHEMA_VERSION = "1.0.0"  # bump when AgentState fields change in a breaking way
+
 
 class AgentState(TypedDict):
     tenant_id: str        # slug; never the full TenantConfig (secrets not checkpointed)
