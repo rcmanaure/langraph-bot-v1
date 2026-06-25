@@ -7,8 +7,6 @@ Known bugs surfaced here (marked with BUG):
   - _send() network error propagates as 500 instead of 200
   - Graph returning empty answer + empty messages → sends empty string to user
 """
-import hashlib
-import hmac
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx

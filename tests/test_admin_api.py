@@ -276,8 +276,6 @@ async def test_create_index_job_tenant_not_found_returns_404():
 @pytest.mark.asyncio
 async def test_create_index_job_valid_returns_202_with_job_id():
     """Valid upload → 201 with job_id and status PENDING."""
-    from unittest.mock import patch as p
-
     app = make_app()
 
     tenant_row = MagicMock()
