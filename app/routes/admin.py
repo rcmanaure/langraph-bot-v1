@@ -1,7 +1,12 @@
 import asyncio
+import hashlib
+import secrets
 import uuid
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 from sqlalchemy import text
 
 from app.auth import verify_operator_key
@@ -10,7 +15,75 @@ from app.models import IndexJob, IndexJobStatus
 from app.services.indexer import run_index_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+templates = Jinja2Templates(directory="app/templates")
 
+
+@router.get("/ui", response_class=HTMLResponse, include_in_schema=False)
+async def admin_ui(request: Request):
+    return templates.TemplateResponse(request=request, name="admin.html")
+
+
+# ── Tenants ──────────────────────────────────────────────────────────────────
+
+@router.get("/tenants")
+async def list_tenants(_: None = Depends(verify_operator_key)):
+    async with AsyncSessionLocal() as db:
+        rows = await db.execute(
+            text("""
+                SELECT id, slug, expertise_area, contact_url, plan, active, created_at
+                  FROM tenants ORDER BY created_at DESC
+            """)
+        )
+        return [dict(r._mapping) for r in rows.fetchall()]
+
+
+class TenantCreate(BaseModel):
+    slug: str
+    bot_token: str
+    webhook_secret: str
+    expertise_area: str = ""
+    contact_url: str = ""
+    plan: str = "free"
+
+
+@router.post("/tenants", status_code=201)
+async def create_tenant(body: TenantCreate, _: None = Depends(verify_operator_key)):
+    raw_api_key = secrets.token_hex(32)
+    api_key_hash = hashlib.sha256(raw_api_key.encode()).hexdigest()
+
+    async with AsyncSessionLocal() as db:
+        existing = (await db.execute(
+            text("SELECT id FROM tenants WHERE slug = :slug OR bot_token = :token"),
+            {"slug": body.slug, "token": body.bot_token},
+        )).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Slug o bot_token ya existe")
+
+        await db.execute(
+            text("""
+                INSERT INTO tenants
+                    (slug, api_key_hash, webhook_secret, bot_token, plan,
+                     expertise_area, contact_url, active)
+                VALUES
+                    (:slug, :api_key_hash, :webhook_secret, :bot_token, :plan,
+                     :expertise_area, :contact_url, true)
+            """),
+            {
+                "slug": body.slug,
+                "api_key_hash": api_key_hash,
+                "webhook_secret": body.webhook_secret,
+                "bot_token": body.bot_token,
+                "plan": body.plan,
+                "expertise_area": body.expertise_area,
+                "contact_url": body.contact_url,
+            },
+        )
+        await db.commit()
+
+    return {"slug": body.slug, "api_key": raw_api_key}
+
+
+# ── Index jobs ────────────────────────────────────────────────────────────────
 
 @router.post("/index")
 async def create_index_job(
@@ -52,10 +125,7 @@ async def create_index_job(
 
 
 @router.get("/index/{job_id}")
-async def get_index_job(
-    job_id: str,
-    _: None = Depends(verify_operator_key),
-):
+async def get_index_job(job_id: str, _: None = Depends(verify_operator_key)):
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             text("""
@@ -72,10 +142,7 @@ async def get_index_job(
 
 
 @router.get("/index")
-async def list_index_jobs(
-    tenant_slug: str,
-    _: None = Depends(verify_operator_key),
-):
+async def list_index_jobs(tenant_slug: str, _: None = Depends(verify_operator_key)):
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             text("""

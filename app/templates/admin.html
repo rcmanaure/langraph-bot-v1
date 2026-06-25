@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LabBot Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+  <style>
+    [x-cloak] { display: none !important; }
+    .field { @apply w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white; }
+  </style>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans" x-data="admin()" x-init="init()" x-cloak>
+
+  <!-- Login overlay -->
+  <div x-show="!authenticated" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm">
+      <div class="text-center mb-6">
+        <div class="inline-flex items-center justify-center w-12 h-12 bg-blue-600 rounded-xl mb-4">
+          <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+          </svg>
+        </div>
+        <h1 class="text-xl font-semibold text-gray-900">LabBot Admin</h1>
+        <p class="text-sm text-gray-500 mt-1">Ingresa tu clave de operador</p>
+      </div>
+      <form @submit.prevent="login()">
+        <div class="mb-4">
+          <label class="block text-xs font-medium text-gray-700 mb-1">Clave de operador</label>
+          <input
+            x-model="loginKey"
+            type="password"
+            autocomplete="current-password"
+            class="field"
+            placeholder="••••••••••••••••••••••••"
+            autofocus
+            required
+          >
+        </div>
+        <div x-show="loginError" class="mb-3 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="loginError"></div>
+        <button
+          type="submit"
+          :disabled="loginLoading"
+          class="w-full bg-blue-600 text-white py-2 px-4 rounded-lg text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition-colors"
+        >
+          <span x-show="!loginLoading">Ingresar</span>
+          <span x-show="loginLoading">Verificando...</span>
+        </button>
+      </form>
+      <p class="text-xs text-gray-400 text-center mt-4">Esta clave fue generada por el administrador del sistema</p>
+    </div>
+  </div>
+
+  <!-- App shell -->
+  <div x-show="authenticated">
+
+    <!-- Nav -->
+    <nav class="bg-white border-b border-gray-200 sticky top-0 z-40">
+      <div class="max-w-5xl mx-auto px-4 flex items-center justify-between h-13 py-2">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 bg-blue-600 rounded-lg flex items-center justify-center flex-shrink-0">
+            <svg class="w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3H5a2 2 0 00-2 2v4m6-6h10a2 2 0 012 2v4M9 3v18m0 0h10a2 2 0 002-2V9M9 21H5a2 2 0 01-2-2V9m0 0h18"/>
+            </svg>
+          </div>
+          <span class="font-semibold text-gray-900 text-sm hidden sm:block">LabBot Admin</span>
+        </div>
+
+        <div class="flex items-center gap-1">
+          <button @click="setTab('tenants')" :class="tab==='tenants' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Tenants</button>
+          <button @click="setTab('upload')" :class="tab==='upload' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Documentos</button>
+          <button @click="setTab('jobs')" :class="tab==='jobs' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Jobs</button>
+        </div>
+
+        <button @click="logout()" class="text-xs text-gray-400 hover:text-gray-600 transition-colors px-2 py-1 rounded hover:bg-gray-100">Salir</button>
+      </div>
+    </nav>
+
+    <!-- Content -->
+    <main class="max-w-5xl mx-auto px-4 py-6">
+
+      <!-- ── TENANTS ── -->
+      <div x-show="tab === 'tenants'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-gray-900">Tenants</h2>
+          <button @click="showAddTenant = !showAddTenant" class="bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors">+ Agregar</button>
+        </div>
+
+        <!-- Add form -->
+        <div x-show="showAddTenant" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 -translate-y-1" x-transition:enter-end="opacity-100 translate-y-0" class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
+          <h3 class="text-sm font-semibold text-gray-900 mb-4">Nuevo tenant</h3>
+          <form @submit.prevent="createTenant()" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div>
+              <label class="block text-xs font-medium text-gray-700 mb-1">Slug <span class="text-red-500">*</span></label>
+              <input x-model="newTenant.slug" type="text" required placeholder="mi-laboratorio" pattern="[a-z0-9\-]+" title="Solo letras minúsculas, números y guiones" class="field">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-700 mb-1">Bot Token Telegram <span class="text-red-500">*</span></label>
+              <input x-model="newTenant.bot_token" type="text" required placeholder="123456:ABC-DEF1234..." class="field">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-700 mb-1">Webhook Secret <span class="text-red-500">*</span></label>
+              <input x-model="newTenant.webhook_secret" type="text" required placeholder="mi-secreto-seguro" class="field">
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-gray-700 mb-1">Plan</label>
+              <select x-model="newTenant.plan" class="field">
+                <option value="free">Free</option>
+                <option value="basic">Basic</option>
+                <option value="pro">Pro</option>
+              </select>
+            </div>
+            <div class="sm:col-span-2">
+              <label class="block text-xs font-medium text-gray-700 mb-1">Área de expertise</label>
+              <input x-model="newTenant.expertise_area" type="text" placeholder="diagnóstico histológico" class="field">
+            </div>
+            <div class="sm:col-span-2">
+              <label class="block text-xs font-medium text-gray-700 mb-1">URL de contacto</label>
+              <input x-model="newTenant.contact_url" type="url" placeholder="https://wa.me/..." class="field">
+            </div>
+            <div x-show="tenantError" class="sm:col-span-2 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="tenantError"></div>
+            <div x-show="tenantSuccess" class="sm:col-span-2 rounded-lg bg-green-50 border border-green-200 px-4 py-3">
+              <p class="text-sm text-green-700 font-medium" x-text="tenantSuccess"></p>
+              <template x-if="newApiKey">
+                <div class="mt-2">
+                  <p class="text-xs text-green-600 mb-1">API Key generada (guarda esta clave, no se vuelve a mostrar):</p>
+                  <code class="block text-xs bg-green-100 rounded px-2 py-1.5 break-all font-mono text-green-800" x-text="newApiKey"></code>
+                </div>
+              </template>
+            </div>
+            <div class="sm:col-span-2 flex gap-2 pt-1">
+              <button type="submit" :disabled="tenantLoading" class="bg-blue-600 text-white text-sm px-4 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors">
+                <span x-show="!tenantLoading">Crear tenant</span>
+                <span x-show="tenantLoading">Creando...</span>
+              </button>
+              <button type="button" @click="showAddTenant=false; resetTenantForm()" class="text-sm text-gray-600 px-4 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">Cancelar</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Table -->
+        <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div x-show="tenantsLoading" class="flex items-center justify-center py-16 text-gray-400 text-sm gap-2">
+            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+            Cargando...
+          </div>
+          <div x-show="!tenantsLoading && tenants.length === 0" class="flex flex-col items-center justify-center py-16 text-gray-400">
+            <svg class="w-12 h-12 mb-3 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"/></svg>
+            <p class="text-sm font-medium text-gray-500">No hay tenants</p>
+            <button @click="showAddTenant=true" class="mt-2 text-sm text-blue-600 hover:underline">Crear el primero</button>
+          </div>
+          <div x-show="!tenantsLoading && tenants.length > 0" class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Slug</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden sm:table-cell">Expertise</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Plan</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Creado</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                <template x-for="t in tenants" :key="t.id">
+                  <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-4 py-3 font-mono text-blue-700 font-medium text-xs" x-text="t.slug"></td>
+                    <td class="px-4 py-3 text-gray-600 text-xs hidden sm:table-cell max-w-xs truncate" x-text="t.expertise_area || '—'"></td>
+                    <td class="px-4 py-3">
+                      <span :class="{'bg-gray-100 text-gray-600':t.plan==='free','bg-blue-100 text-blue-700':t.plan==='basic','bg-purple-100 text-purple-700':t.plan==='pro'}" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="t.plan"></span>
+                    </td>
+                    <td class="px-4 py-3">
+                      <span :class="t.active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="t.active ? 'Activo' : 'Inactivo'"></span>
+                    </td>
+                    <td class="px-4 py-3 text-gray-400 text-xs hidden md:table-cell" x-text="fmtDate(t.created_at)"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── UPLOAD ── -->
+      <div x-show="tab === 'upload'">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">Subir documento</h2>
+        <div class="bg-white rounded-xl border border-gray-200 p-6 max-w-xl">
+          <form @submit.prevent="uploadDoc()" class="space-y-4">
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Tenant <span class="text-red-500">*</span></label>
+              <select x-model="up.tenant" required class="field">
+                <option value="">Seleccionar tenant...</option>
+                <template x-for="t in tenants" :key="t.slug">
+                  <option :value="t.slug" x-text="t.slug + (t.expertise_area ? ' — ' + t.expertise_area : '')"></option>
+                </template>
+              </select>
+            </div>
+
+            <div>
+              <label class="block text-sm font-medium text-gray-700 mb-1">Archivo <span class="text-red-500">*</span></label>
+              <div
+                class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors"
+                :class="up.dragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50/50'"
+                @dragover.prevent="up.dragging=true"
+                @dragleave="up.dragging=false"
+                @drop.prevent="dropFile($event)"
+                @click="$refs.fileInput.click()"
+              >
+                <template x-if="!up.file">
+                  <div>
+                    <svg class="w-10 h-10 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
+                    <p class="text-sm text-gray-500">Arrastra aquí o <span class="text-blue-600 font-medium">haz clic para seleccionar</span></p>
+                    <p class="text-xs text-gray-400 mt-1">PDF o Markdown (.pdf, .md)</p>
+                  </div>
+                </template>
+                <template x-if="up.file">
+                  <div class="flex items-center justify-center gap-2">
+                    <svg class="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                    <span class="text-sm text-blue-700 font-medium" x-text="up.file.name"></span>
+                    <button type="button" @click.stop="up.file=null" class="text-gray-400 hover:text-gray-600 ml-1">
+                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                </template>
+                <input x-ref="fileInput" type="file" accept=".pdf,.md" class="hidden" @change="up.file=$event.target.files[0]">
+              </div>
+            </div>
+
+            <!-- Progress -->
+            <div x-show="up.jobId" class="rounded-xl border border-gray-200 bg-gray-50 p-4">
+              <div class="flex items-center justify-between mb-2">
+                <span class="text-sm font-medium text-gray-700">Indexando</span>
+                <span
+                  :class="{'bg-yellow-100 text-yellow-700':up.status==='PENDING'||up.status==='RUNNING','bg-green-100 text-green-700':up.status==='DONE','bg-red-100 text-red-700':up.status==='FAILED'}"
+                  class="px-2 py-0.5 rounded-full text-xs font-medium"
+                  x-text="up.status"
+                ></span>
+              </div>
+              <div class="w-full bg-gray-200 rounded-full h-1.5 mb-1">
+                <div class="h-1.5 rounded-full transition-all duration-500" :class="up.status==='FAILED'?'bg-red-500':'bg-blue-600'" :style="`width:${up.pct}%`"></div>
+              </div>
+              <div class="flex items-center justify-between">
+                <p class="text-xs text-gray-500">
+                  <span x-show="up.total > 0" x-text="`${up.done} / ${up.total} chunks`"></span>
+                  <span x-show="up.status==='DONE'" class="text-green-600 font-medium ml-1">Listo</span>
+                  <span x-show="up.status==='FAILED'" class="text-red-600" x-text="' Error: ' + (up.err||'desconocido')"></span>
+                </p>
+                <p class="text-xs text-gray-400 font-mono" x-text="up.jobId ? up.jobId.slice(0,8)+'...' : ''"></p>
+              </div>
+            </div>
+
+            <div x-show="up.uploadErr" class="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="up.uploadErr"></div>
+
+            <button
+              type="submit"
+              :disabled="up.loading || !up.file || !up.tenant"
+              class="bg-blue-600 text-white text-sm px-5 py-2 rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors"
+            >
+              <span x-show="!up.loading">Subir e indexar</span>
+              <span x-show="up.loading" class="flex items-center gap-2">
+                <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                Subiendo...
+              </span>
+            </button>
+          </form>
+        </div>
+      </div>
+
+      <!-- ── JOBS ── -->
+      <div x-show="tab === 'jobs'">
+        <div class="flex items-center justify-between mb-4">
+          <h2 class="text-lg font-semibold text-gray-900">Jobs de indexación</h2>
+          <div class="flex items-center gap-2">
+            <select x-model="jobsFilter" @change="fetchJobs()" class="field text-sm w-auto">
+              <option value="">Todos los tenants</option>
+              <template x-for="t in tenants" :key="t.slug"><option :value="t.slug" x-text="t.slug"></option></template>
+            </select>
+            <button @click="fetchJobs()" class="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors" title="Actualizar">
+              <svg :class="{'animate-spin':jobsLoading}" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+          <div x-show="jobsLoading" class="flex items-center justify-center py-16 text-gray-400 text-sm gap-2">
+            <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+            Cargando...
+          </div>
+          <div x-show="!jobsLoading && jobs.length === 0" class="flex flex-col items-center justify-center py-16 text-gray-400">
+            <svg class="w-12 h-12 mb-3 text-gray-200" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/></svg>
+            <p class="text-sm text-gray-500">No hay jobs de indexación</p>
+          </div>
+          <div x-show="!jobsLoading && jobs.length > 0" class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead class="bg-gray-50 border-b border-gray-200">
+                <tr>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Archivo</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Estado</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden sm:table-cell">Progreso</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Fecha</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-gray-100">
+                <template x-for="j in jobs" :key="j.id">
+                  <tr class="hover:bg-gray-50 transition-colors">
+                    <td class="px-4 py-3">
+                      <p class="font-medium text-gray-800 truncate max-w-xs" x-text="j.filename"></p>
+                      <p class="text-xs text-gray-400 font-mono" x-text="j.id.slice(0,8)+'...'"></p>
+                    </td>
+                    <td class="px-4 py-3">
+                      <span
+                        :class="{'bg-yellow-100 text-yellow-700':j.status==='PENDING'||j.status==='RUNNING','bg-green-100 text-green-700':j.status==='DONE','bg-red-100 text-red-700':j.status==='FAILED'}"
+                        class="px-2 py-0.5 rounded-full text-xs font-medium"
+                        x-text="j.status"
+                      ></span>
+                      <p x-show="j.status==='FAILED' && j.error_message" class="text-xs text-red-500 mt-0.5 max-w-xs truncate" x-text="j.error_message"></p>
+                    </td>
+                    <td class="px-4 py-3 hidden sm:table-cell">
+                      <div x-show="j.chunks_total > 0">
+                        <div class="flex items-center gap-2">
+                          <div class="flex-1 bg-gray-200 rounded-full h-1.5 w-20">
+                            <div class="h-1.5 rounded-full bg-blue-500" :style="`width:${Math.round(j.chunks_done/j.chunks_total*100)}%`"></div>
+                          </div>
+                          <span class="text-xs text-gray-500" x-text="`${j.chunks_done}/${j.chunks_total}`"></span>
+                        </div>
+                      </div>
+                      <span x-show="!j.chunks_total" class="text-gray-400 text-xs">—</span>
+                    </td>
+                    <td class="px-4 py-3 text-gray-400 text-xs hidden md:table-cell" x-text="fmtDate(j.created_at)"></td>
+                  </tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <script>
+    function admin() {
+      return {
+        authenticated: false,
+        loginKey: '',
+        loginLoading: false,
+        loginError: '',
+        tab: 'tenants',
+
+        tenants: [],
+        tenantsLoading: false,
+        showAddTenant: false,
+        newTenant: { slug:'', bot_token:'', webhook_secret:'', expertise_area:'', contact_url:'', plan:'free' },
+        tenantLoading: false,
+        tenantError: '',
+        tenantSuccess: '',
+        newApiKey: '',
+
+        up: { tenant:'', file:null, dragging:false, loading:false, uploadErr:'', jobId:null, status:'', pct:0, total:0, done:0, err:'' },
+
+        jobs: [],
+        jobsLoading: false,
+        jobsFilter: '',
+
+        _key() { return localStorage.getItem('admin_key') || '' },
+        _h() { return { 'X-Operator-Key': this._key() } },
+
+        async init() {
+          const saved = localStorage.getItem('admin_key')
+          if (!saved) return
+          const ok = await this._verify(saved)
+          if (ok) { this.authenticated = true; this.fetchTenants() }
+        },
+
+        async _verify(key) {
+          try {
+            const r = await fetch('/admin/tenants', { headers: { 'X-Operator-Key': key } })
+            return r.status !== 401 && r.status !== 403
+          } catch { return false }
+        },
+
+        async login() {
+          this.loginLoading = true
+          this.loginError = ''
+          const ok = await this._verify(this.loginKey)
+          if (ok) {
+            localStorage.setItem('admin_key', this.loginKey)
+            this.authenticated = true
+            this.loginKey = ''
+            await this.fetchTenants()
+          } else {
+            this.loginError = 'Clave incorrecta. Verifica e intenta de nuevo.'
+          }
+          this.loginLoading = false
+        },
+
+        logout() {
+          localStorage.removeItem('admin_key')
+          this.authenticated = false
+          this.loginKey = ''
+        },
+
+        setTab(t) {
+          this.tab = t
+          if (t === 'jobs') this.fetchJobs()
+          if (t === 'upload' || t === 'tenants') this.fetchTenants()
+        },
+
+        async fetchTenants() {
+          this.tenantsLoading = true
+          try {
+            const r = await fetch('/admin/tenants', { headers: this._h() })
+            if (r.ok) this.tenants = await r.json()
+          } catch {}
+          this.tenantsLoading = false
+        },
+
+        async createTenant() {
+          this.tenantLoading = true
+          this.tenantError = ''
+          this.tenantSuccess = ''
+          this.newApiKey = ''
+          try {
+            const r = await fetch('/admin/tenants', {
+              method: 'POST',
+              headers: { ...this._h(), 'Content-Type': 'application/json' },
+              body: JSON.stringify(this.newTenant),
+            })
+            const data = await r.json()
+            if (r.ok) {
+              this.tenantSuccess = `Tenant "${data.slug}" creado.`
+              this.newApiKey = data.api_key || ''
+              this.resetTenantForm()
+              await this.fetchTenants()
+            } else {
+              this.tenantError = data.detail || 'Error al crear el tenant'
+            }
+          } catch (e) { this.tenantError = 'Error de red: ' + e.message }
+          this.tenantLoading = false
+        },
+
+        resetTenantForm() {
+          this.newTenant = { slug:'', bot_token:'', webhook_secret:'', expertise_area:'', contact_url:'', plan:'free' }
+          this.tenantError = ''
+        },
+
+        dropFile(e) {
+          this.up.dragging = false
+          const f = e.dataTransfer.files[0]
+          if (f) this.up.file = f
+        },
+
+        async uploadDoc() {
+          this.up.loading = true
+          this.up.uploadErr = ''
+          this.up.jobId = null
+          this.up.pct = 0
+          this.up.total = 0
+          this.up.done = 0
+          const fd = new FormData()
+          fd.append('tenant_slug', this.up.tenant)
+          fd.append('file', this.up.file)
+          try {
+            const r = await fetch('/admin/index', { method:'POST', headers: this._h(), body: fd })
+            const data = await r.json()
+            if (r.ok) {
+              this.up.jobId = data.job_id
+              this.up.status = 'PENDING'
+              this.up.file = null
+              this._pollJob(data.job_id)
+            } else {
+              this.up.uploadErr = data.detail || 'Error al subir'
+            }
+          } catch (e) { this.up.uploadErr = 'Error de red: ' + e.message }
+          this.up.loading = false
+        },
+
+        async _pollJob(id) {
+          const tick = async () => {
+            try {
+              const r = await fetch(`/admin/index/${id}`, { headers: this._h() })
+              if (!r.ok) return
+              const d = await r.json()
+              this.up.status = d.status
+              this.up.total = d.chunks_total || 0
+              this.up.done = d.chunks_done || 0
+              this.up.err = d.error_message || ''
+              this.up.pct = this.up.total > 0 ? Math.round(this.up.done / this.up.total * 100) : (d.status === 'RUNNING' ? 10 : 0)
+              if (d.status === 'DONE') { this.up.pct = 100; return }
+              if (d.status === 'FAILED') return
+              setTimeout(tick, 2000)
+            } catch {}
+          }
+          setTimeout(tick, 800)
+        },
+
+        async fetchJobs() {
+          this.jobsLoading = true
+          this.jobs = []
+          const slugs = this.jobsFilter ? [this.jobsFilter] : this.tenants.map(t => t.slug)
+          if (!slugs.length) { this.jobsLoading = false; return }
+          try {
+            const results = await Promise.all(
+              slugs.map(s => fetch(`/admin/index?tenant_slug=${s}`, { headers: this._h() }).then(r => r.ok ? r.json() : []))
+            )
+            this.jobs = results.flat().sort((a, b) => new Date(b.created_at) - new Date(a.created_at)).slice(0, 100)
+          } catch {}
+          this.jobsLoading = false
+        },
+
+        fmtDate(iso) {
+          if (!iso) return '—'
+          try { return new Date(iso).toLocaleString('es-VE', { dateStyle:'short', timeStyle:'short' }) }
+          catch { return iso }
+        },
+      }
+    }
+  </script>
+</body>
+</html>
