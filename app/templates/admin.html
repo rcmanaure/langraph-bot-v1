@@ -84,12 +84,20 @@
       <div x-show="tab === 'tenants'">
         <div class="flex items-center justify-between mb-4">
           <h2 class="text-lg font-semibold text-gray-900">Tenants</h2>
-          <button @click="showAddTenant = !showAddTenant" class="bg-blue-600 text-white text-sm px-3 py-1.5 rounded-lg hover:bg-blue-700 transition-colors">+ Agregar</button>
+          <button @click="showAddTenant = !showAddTenant" :class="showAddTenant ? 'bg-gray-100 text-gray-700 hover:bg-gray-200' : 'bg-blue-600 text-white hover:bg-blue-700'" class="text-sm px-3 py-1.5 rounded-lg transition-colors">
+            <span x-show="!showAddTenant">+ Agregar</span>
+            <span x-show="showAddTenant">✕ Cancelar</span>
+          </button>
         </div>
 
         <!-- Add form -->
         <div x-show="showAddTenant" x-transition:enter="transition ease-out duration-150" x-transition:enter-start="opacity-0 -translate-y-1" x-transition:enter-end="opacity-100 translate-y-0" class="bg-white rounded-xl border border-gray-200 p-5 mb-4">
-          <h3 class="text-sm font-semibold text-gray-900 mb-4">Nuevo tenant</h3>
+          <div class="flex items-center justify-between mb-4">
+            <h3 class="text-sm font-semibold text-gray-900">Nuevo tenant</h3>
+            <button type="button" @click="showAddTenant=false; resetTenantForm()" class="text-gray-400 hover:text-gray-600 transition-colors p-1 rounded hover:bg-gray-100">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+            </button>
+          </div>
           <form @submit.prevent="createTenant()" class="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div>
               <label class="block text-xs font-medium text-gray-700 mb-1">Slug <span class="text-red-500">*</span></label>
