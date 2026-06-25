@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 _enc = tiktoken.get_encoding("cl100k_base")
 
 
+def token_counter(msgs) -> int:
+    return sum(len(_enc.encode(m.content if isinstance(m.content, str) else "")) for m in msgs)
+
+
 async def retrieve_chunks(db: AsyncSession, query: str, namespace: str) -> list[dict]:
     query_vec = await get_embeddings().aembed_query(query)
 

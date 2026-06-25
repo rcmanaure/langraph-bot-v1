@@ -2,12 +2,11 @@ import logging
 
 from langchain_core.messages import AIMessage
 
+from app.graph.nodes.generate import _FALLBACK
 from app.services.security import validate_output_canary
 from app.state import AgentState
 
 logger = logging.getLogger(__name__)
-
-_FALLBACK = "Lo siento, no pude procesar tu consulta en este momento. Por favor intenta de nuevo."
 
 
 async def validate_output(state: AgentState) -> dict:

@@ -1,4 +1,3 @@
-import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -9,15 +8,11 @@ from sqlalchemy import text
 
 from app.auth import verify_operator_key
 from app.db import AsyncSessionLocal
+from app.services.security import validate_thread_id
 
 _limiter = Limiter(key_func=get_remote_address)
 
 router = APIRouter(prefix="/operator", tags=["operator"])
-
-# thread format: tenant:{slug}:user:{id}:channel:(telegram|whatsapp)(:vN)?
-_THREAD_RE = re.compile(
-    r"^tenant:[a-z0-9-]+:user:[0-9]+:channel:(telegram|whatsapp)(:v[0-9]+)?$"
-)
 
 
 class ResumeRequest(BaseModel):
@@ -32,7 +27,7 @@ async def resume(
     request: Request,
     _: None = Depends(verify_operator_key),
 ):
-    if not _THREAD_RE.match(thread_id):
+    if not validate_thread_id(thread_id):
         raise HTTPException(status_code=422, detail="Invalid thread_id format")
 
     from langgraph.types import Command

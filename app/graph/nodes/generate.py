@@ -1,18 +1,15 @@
 import logging
 
-import tiktoken
 from langchain_core.messages import AIMessage, SystemMessage, trim_messages
 from sqlalchemy import text
 
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.services.llm import get_chat_llm
-from app.services.rag import cap_chunks_to_tokens
+from app.services.rag import cap_chunks_to_tokens, token_counter
 from app.state import AgentState
 
 logger = logging.getLogger(__name__)
-
-_enc = tiktoken.get_encoding("cl100k_base")
 
 _FORMAT_HINT = """
 Formato de respuesta (texto plano):
@@ -47,10 +44,6 @@ Catálogo:
 _OFF_TOPIC_MSG = "Lo siento, no puedo ayudarte con eso. Soy un asistente especializado en {expertise}."
 
 _FALLBACK = "Lo siento, no pude procesar tu consulta en este momento. Por favor intenta de nuevo."
-
-
-def _token_counter(msgs) -> int:
-    return sum(len(_enc.encode(m.content if isinstance(m.content, str) else "")) for m in msgs)
 
 
 async def _load_tenant(slug: str) -> dict:
@@ -100,7 +93,7 @@ async def generate(state: AgentState) -> dict:
         state["messages"],
         max_tokens=settings.history_max_tokens,
         strategy="last",
-        token_counter=_token_counter,
+        token_counter=token_counter,
         allow_partial=False,
         include_system=True,
     )
