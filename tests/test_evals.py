@@ -94,7 +94,7 @@ async def test_triage_off_topic():
 @pytest.mark.skipif(_SKIP, reason=skip_reason)
 async def test_generate_uses_context():
     """Generate node grounds answer in provided context."""
-    from app.graph.nodes.generate import _RAG_SYSTEM
+    from app.graph.nodes.generate import _FORMAT_HINT, _RAG_SYSTEM
     from app.services.llm import get_chat_llm
 
     context = "El plan básico cuesta $29/mes e incluye hasta 5 usuarios."
@@ -102,6 +102,7 @@ async def test_generate_uses_context():
         expertise="software SaaS",
         contact_hint="",
         context=context,
+        format_hint=_FORMAT_HINT,
     )
     llm = get_chat_llm()
     response = await llm.ainvoke([
@@ -115,7 +116,7 @@ async def test_generate_uses_context():
 @pytest.mark.skipif(_SKIP, reason=skip_reason)
 async def test_generate_admits_missing_context():
     """Generate node admits when context is insufficient, doesn't hallucinate."""
-    from app.graph.nodes.generate import _RAG_SYSTEM
+    from app.graph.nodes.generate import _FORMAT_HINT, _RAG_SYSTEM
     from app.services.llm import get_chat_llm
 
     context = "El plan premium incluye soporte prioritario 24/7."
@@ -123,6 +124,7 @@ async def test_generate_admits_missing_context():
         expertise="software SaaS",
         contact_hint="",
         context=context,
+        format_hint=_FORMAT_HINT,
     )
     llm = get_chat_llm()
     response = await llm.ainvoke([
