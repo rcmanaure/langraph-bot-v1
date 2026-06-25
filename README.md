@@ -81,12 +81,15 @@ The API starts at `http://localhost:8000`. Migrations run automatically on start
 
 ### 3. Expose a public webhook (local dev)
 
-Telegram requires a public HTTPS URL. Use a cloudflared quick tunnel:
+Telegram requires a public HTTPS URL. On Windows, `start-tunnel.ps1` starts cloudflared **and** registers the webhook automatically:
 
-```bash
-cloudflared tunnel --url http://localhost:8000
-# Prints: https://<random>.trycloudflare.com
+```powershell
+# Fill in TELEGRAM_BOT_TOKEN, WEBHOOK_SECRET, and TENANT_SLUG in .env first
+.\start-tunnel.ps1
+# Starts the tunnel, waits for the trycloudflare.com URL, calls setWebhook — all in one step.
 ```
+
+On Linux/macOS, start cloudflared manually and then follow step 5 below to register the webhook.
 
 ### 4. Create a tenant
 
@@ -104,9 +107,10 @@ echo -n "your-SECRET_KEY-value" | sha256sum
 
 In the **Tenants** tab, fill in slug, bot token, webhook secret, and expertise area.
 
-### 5. Register the Telegram webhook
+### 5. Register the Telegram webhook (Linux/macOS)
 
 ```bash
+# After starting cloudflared and getting the URL:
 curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
   -H "Content-Type: application/json" \
   -d '{
@@ -114,6 +118,8 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
     "secret_token": "<webhook_secret>"
   }'
 ```
+
+> **Note:** `start-tunnel.ps1` (Windows) does steps 3 + 5 together.
 
 ### 6. Index a document
 
@@ -142,7 +148,8 @@ The bot is now live — message it on Telegram.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/webhook/telegram/{tenant_slug}` | Telegram update receiver |
-| `GET/POST` | `/webhook/whatsapp` | WhatsApp Cloud API receiver |
+| `GET` | `/webhook/whatsapp/{tenant_slug}` | WhatsApp webhook verification |
+| `POST` | `/webhook/whatsapp/{tenant_slug}` | WhatsApp Cloud API receiver |
 
 ### Admin (requires `X-Operator-Key` header)
 
@@ -225,6 +232,8 @@ uv run pytest -m "not eval" --tb=short -q
 
 | File | What it covers |
 |---|---|
+| `test_telegram_webhook.py` | Webhook handler edge cases (auth, routing, voice, graph errors) — no live services |
+| `test_admin_api.py` | Admin API edge cases (auth, tenant CRUD, indexing jobs) — no live services |
 | `test_graph.py` | LangGraph routing logic |
 | `test_nodes.py` | Individual node behavior |
 | `test_indexing.py` | Document chunking + embedding pipeline |
@@ -253,7 +262,10 @@ Traefik must be running on the `app` Docker network with a `letsencrypt` certifi
 
 ```
 app/
-├── channels/        # Telegram + WhatsApp webhook handlers
+├── channels/
+│   ├── base.py      # ChannelEvent dataclass + ChannelAdapter Protocol
+│   ├── telegram.py  # TelegramAdapter + webhook handler
+│   └── whatsapp.py  # WhatsAppAdapter + webhook handler
 ├── graph/
 │   ├── builder.py   # LangGraph StateGraph definition
 │   └── nodes/       # validate, retrieve, triage, generate, validate_output
@@ -262,7 +274,13 @@ app/
 ├── routes/          # admin.py, operator.py
 ├── services/        # indexer, rag, llm, stt
 ├── templates/       # admin.html (admin panel)
+├── policies.py      # TenantPolicy + PolicyEngine (policy-as-code)
+├── state.py         # AgentState TypedDict (versioned schema contract)
 └── main.py          # FastAPI app + lifespan
 alembic/             # Database migrations
+docs/
+├── adr/             # Architecture Decision Records (ADR-001 … ADR-004)
+└── agent-dna.md     # AgentState field-by-field contract and versioning rules
 tests/               # pytest test suite
+start-tunnel.ps1     # Windows: starts cloudflared tunnel + registers Telegram webhook
 ```
