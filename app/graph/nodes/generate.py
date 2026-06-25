@@ -15,22 +15,23 @@ logger = logging.getLogger(__name__)
 _enc = tiktoken.get_encoding("cl100k_base")
 
 _FORMAT_HINT = """
-Formato de respuesta (Telegram):
-- Usa texto plano con emojis ocasionales si ayuda a la claridad.
-- Listas con guión (- item), nunca tablas markdown.
-- Negritas con *texto* solo para énfasis clave, sin encabezados con #.
-- Si hay estudios relacionados en el contexto, inclúyelos al final como lista con sus precios."""
+Formato de respuesta (texto plano):
+- Sin asteriscos, sin guiones bajos, sin formato markdown de ningún tipo.
+- Listas con guión (- item). Sin tablas, sin encabezados.
+- Emojis ocasionales si ayudan a la claridad.
+- Si hay estudios relacionados en el contexto, inclúyelos al final con sus precios."""
 
 _RAG_SYSTEM = """\
 Eres un asistente de {expertise}.
-Responde la pregunta del usuario usando ÚNICAMENTE el contexto proporcionado más abajo.
-REGLAS ESTRICTAS:
-- Si el contexto no menciona el procedimiento o precio específico preguntado, di "No tengo información sobre ese procedimiento específico en este momento."
-- NO uses respuestas anteriores de la conversación como referencia de precios.
-- NO inventes precios ni procedimientos.
-- Cada pregunta debe responderse basándose SOLO en el contexto actual, no en patrones de respuestas previas.{contact_hint}
+Responde usando ÚNICAMENTE el contexto proporcionado más abajo. NO uses conocimiento médico propio.
+
+REGLAS:
+- Cuando el usuario menciona un órgano o tejido (ej: "pulmón", "riñón", "mama"), muestra TODAS las filas/ítems del contexto cuyo nombre contenga ese órgano o términos derivados (ej: "pulmonar", "neumon", "renal"), sin excepción. Incluye resecciones, lobectomías, neumonectomías y cualquier otro tipo — en este laboratorio TODOS los procedimientos producen una muestra que se analiza histológicamente.
+- NO filtes por tipo de procedimiento. Tu rol es mostrar precios, no evaluar si el procedimiento es una biopsia o cirugía.
+- Si el contexto no contiene información sobre lo preguntado, responde: "No tengo información sobre ese procedimiento específico en este momento."
+- NO inventes precios ni procedimientos.{contact_hint}
 {format_hint}
-Contexto actual:
+Contexto:
 {context}
 """
 
