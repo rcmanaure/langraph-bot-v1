@@ -17,7 +17,7 @@ def test_route_after_validate_clean(base_state):
     ("rag", "generate"),
     ("catalog", "generate"),
     ("human", "interrupt_node"),
-    ("off_topic", "respond"),
+    ("off_topic", "generate"),
 ])
 def test_route_triage(base_state, decision, expected):
     base_state["triage_decision"] = decision
