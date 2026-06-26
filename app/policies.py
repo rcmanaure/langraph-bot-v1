@@ -1,78 +1,58 @@
-"""Policy-as-code: declarative per-tenant authorization evaluated at trust boundaries.
+"""Policy-as-code: declarative per-tenant authorization.
+
+Handles quotas, rate limiting, and plan-based feature access.
+Policies are evaluated at trust boundaries (index uploads, queries).
 
 Usage:
-    policy = TenantPolicy(tenant_id="acme", plan="basic")
-    decision = engine.check(policy, "query", {"queries_this_month": 1500})
-    if decision is Decision.DENY:
-        raise HTTPException(429, "Query limit reached")
+    policy = TenantPolicy(tenant_slug="acme", plan="basic")
+    if not policy.can_upload_doc(doc_count=5):
+        raise HTTPException(429, "Reached document limit for Basic plan")
 """
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any
+from dataclasses import dataclass
+from typing import Literal
 
 from app.config import PLAN_LIMITS
-
-
-class Decision(str, Enum):
-    ALLOW = "allow"
-    DENY = "deny"
 
 
 @dataclass
 class TenantPolicy:
     """Declarative policy for a single tenant.
 
-    Seeds defaults from PLAN_LIMITS; custom_rules override per-tenant.
-    Add a field here when the policy surface grows — no engine changes needed.
+    Plan choices: "free" | "basic" | "pro"
+    Defaults to "free" when missing from config.
     """
-    tenant_id: str
-    plan: str = "free"
-    custom_rules: dict[str, Any] = field(default_factory=dict)
+    tenant_slug: str
+    plan: Literal["free", "basic", "pro"] = "free"
 
     def _limit(self, key: str) -> int:
-        if key in self.custom_rules:
-            return int(self.custom_rules[key])
+        """Get limit for this plan, fallback to free if plan missing."""
         return PLAN_LIMITS.get(self.plan, PLAN_LIMITS["free"])[key]
 
-    def max_docs(self) -> int:
-        return self._limit("docs")
+    def can_upload_doc(self, doc_count: int) -> bool:
+        """Check if tenant can upload another document."""
+        return doc_count < self._limit("docs")
 
-    def max_chunks(self) -> int:
-        return self._limit("chunks")
+    def can_index_chunk(self, chunk_count: int) -> bool:
+        """Check if tenant can store another chunk."""
+        return chunk_count < self._limit("chunks")
 
-    def max_queries_monthly(self) -> int:
-        return self._limit("queries_monthly")
+    def can_query(self, queries_this_month: int) -> bool:
+        """Check if tenant has queries remaining this month."""
+        return queries_this_month < self._limit("queries_monthly")
 
+    def get_limits(self) -> dict:
+        """Get all limits for this plan."""
+        return self._limit("docs"), self._limit("chunks"), self._limit("queries_monthly")
 
-class PolicyEngine:
-    """Evaluates a TenantPolicy against an action + context.
-
-    Stateless — safe as a module-level singleton.
-    Actions: "query" | "upload_doc" | "index_chunk"
-    """
-
-    def check(
-        self,
-        policy: TenantPolicy,
-        action: str,
-        context: dict[str, Any] | None = None,
-    ) -> Decision:
-        ctx = context or {}
-
-        if action == "query":
-            if ctx.get("queries_this_month", 0) >= policy.max_queries_monthly():
-                return Decision.DENY
-
-        elif action == "upload_doc":
-            if ctx.get("doc_count", 0) >= policy.max_docs():
-                return Decision.DENY
-
-        elif action == "index_chunk":
-            if ctx.get("chunk_count", 0) >= policy.max_chunks():
-                return Decision.DENY
-
-        return Decision.ALLOW
-
-
-# Module-level singleton — no state, safe to share across requests
-engine = PolicyEngine()
+    def get_pricing(self) -> dict:
+        """Get pricing info for this plan."""
+        prices = {"free": 0, "basic": 5, "pro": 10}
+        return {
+            "plan": self.plan,
+            "price_usd": prices.get(self.plan, 0),
+            "limits": {
+                "docs": self._limit("docs"),
+                "chunks": self._limit("chunks"),
+                "queries_monthly": self._limit("queries_monthly"),
+            }
+        }

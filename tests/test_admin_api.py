@@ -349,3 +349,106 @@ async def test_get_index_job_found_returns_job():
     assert r.status_code == 200
     assert r.json()["status"] == "COMPLETED"
     assert r.json()["filename"] == "test.pdf"
+
+
+# ── GET /pricing (public, no auth required) ────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_get_pricing_returns_all_plans():
+    """GET /pricing returns free/basic/pro with pricing and limits."""
+    app = make_app()
+    r = await _request(app, "get", "/pricing")
+    assert r.status_code == 200
+    body = r.json()
+    assert "plans" in body
+    plans = body["plans"]
+
+    # All three plans present
+    assert "free" in plans
+    assert "basic" in plans
+    assert "pro" in plans
+
+    # Free plan is free
+    assert plans["free"]["price_usd"] == 0
+    assert plans["free"]["billing"] == "free"
+
+    # Basic is $5/month
+    assert plans["basic"]["price_usd"] == 5
+    assert plans["basic"]["billing"] == "monthly"
+
+    # Pro is $10/month
+    assert plans["pro"]["price_usd"] == 10
+    assert plans["pro"]["billing"] == "monthly"
+
+
+@pytest.mark.asyncio
+async def test_get_pricing_includes_limits():
+    """Each plan includes docs, chunks, queries_monthly limits."""
+    app = make_app()
+    r = await _request(app, "get", "/pricing")
+    plans = r.json()["plans"]
+
+    for plan in plans.values():
+        assert "limits" in plan
+        limits = plan["limits"]
+        assert "docs" in limits
+        assert "chunks" in limits
+        assert "queries_monthly" in limits
+        assert limits["docs"] > 0
+        assert limits["chunks"] > 0
+        assert limits["queries_monthly"] > 0
+
+
+@pytest.mark.asyncio
+async def test_billing_requires_auth():
+    """GET /admin/billing/{tenant_slug} requires operator key."""
+    app = make_app(bypass_auth=False)
+    r = await _request(app, "get", "/admin/billing/acme")
+    assert r.status_code in (401, 422)  # 401 or 422 depending on auth impl
+
+
+@pytest.mark.asyncio
+async def test_get_billing_tenant_not_found_returns_404():
+    """GET /admin/billing for nonexistent tenant → 404."""
+    app = make_app()
+    result = MagicMock()
+    result.first.return_value = None
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=result)
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx):
+        r = await _request(app, "get", "/admin/billing/nonexistent")
+    assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_billing_returns_plan_usage():
+    """GET /admin/billing returns plan, usage, and pricing info."""
+    app = make_app()
+
+    # Mock tenant lookup
+    tenant_row = MagicMock()
+    tenant_row[0] = 1  # tenant_id
+    tenant_row[1] = "basic"  # plan
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=8)  # 8 docs, 1500 chunks
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx):
+        r = await _request(app, "get", "/admin/billing/acme")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["plan"] == "basic"
+    assert body["price_usd"] == 5
+    assert "limits" in body
+    assert "usage_percent" in body
+    assert body["limits"]["documents"]["max"] == 20  # Basic limit

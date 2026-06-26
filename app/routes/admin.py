@@ -12,9 +12,11 @@ from sqlalchemy import text
 from app.auth import verify_operator_key
 from app.db import AsyncSessionLocal
 from app.models import IndexJob, IndexJobStatus
+from app.policies import TenantPolicy
 from app.services.indexer import run_index_job
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+public_router = APIRouter(tags=["billing"])
 templates = Jinja2Templates(directory="app/templates")
 
 
@@ -95,12 +97,27 @@ async def create_index_job(
 
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
-            text("SELECT id FROM tenants WHERE slug = :slug AND active = true"),
+            text("SELECT id, plan FROM tenants WHERE slug = :slug AND active = true"),
             {"slug": tenant_slug},
         )).first()
         if not row:
             raise HTTPException(status_code=404, detail="Tenant not found")
-        tenant_id = row.id
+        tenant_id, plan = row
+
+        # Check document limit based on plan
+        policy = TenantPolicy(tenant_slug=tenant_slug, plan=plan)
+        # Count completed index jobs (= uploaded documents)
+        doc_count = (await db.scalar(
+            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'COMPLETED'"),
+            {"tid": tenant_id},
+        )) or 0
+
+        if not policy.can_upload_doc(doc_count):
+            max_docs = policy._limit("docs")
+            raise HTTPException(
+                status_code=429,
+                detail=f"Document limit ({max_docs}) reached for {plan.upper()} plan. Upgrade to add more."
+            )
 
         job = IndexJob(
             id=uuid.uuid4(),
@@ -157,3 +174,61 @@ async def list_index_jobs(tenant_slug: str, _: None = Depends(verify_operator_ke
             {"slug": tenant_slug},
         )
         return [dict(r._mapping) for r in result.fetchall()]
+
+
+# ── Plan & Quotas ────────────────────────────────────────────────────────────
+
+@router.get("/billing/{tenant_slug}")
+async def get_tenant_billing(tenant_slug: str, _: None = Depends(verify_operator_key)):
+    """Get plan, pricing, and current usage for a tenant."""
+    async with AsyncSessionLocal() as db:
+        tenant = (await db.execute(
+            text("SELECT id, plan FROM tenants WHERE slug = :slug AND active = true"),
+            {"slug": tenant_slug},
+        )).first()
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        tenant_id, plan = tenant
+
+        # Count current usage (completed documents and total chunks)
+        doc_count = (await db.scalar(
+            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'COMPLETED'"),
+            {"tid": tenant_id},
+        )) or 0
+        chunk_count = (await db.scalar(
+            text("SELECT COUNT(*) FROM document_chunks WHERE tenant_id = :tid"),
+            {"tid": tenant_id},
+        )) or 0
+
+    policy = TenantPolicy(tenant_slug=tenant_slug, plan=plan)
+    limits = policy.get_limits()
+    pricing = policy.get_pricing()
+
+    return {
+        "plan": plan,
+        "price_usd": pricing["price_usd"],
+        "limits": {
+            "documents": {"current": doc_count, "max": limits[0]},
+            "chunks": {"current": chunk_count, "max": limits[1]},
+            "queries_monthly": {"current": 0, "max": limits[2]},  # TODO: track queries
+        },
+        "usage_percent": {
+            "documents": round((doc_count / limits[0] * 100) if limits[0] > 0 else 0, 1),
+            "chunks": round((chunk_count / limits[1] * 100) if limits[1] > 0 else 0, 1),
+        }
+    }
+
+
+@public_router.get("/pricing")
+async def get_pricing():
+    """Get pricing and plan details (no auth required)."""
+    plans = {}
+    for plan_name in ["free", "basic", "pro"]:
+        policy = TenantPolicy(tenant_slug="pricing", plan=plan_name)
+        pricing_info = policy.get_pricing()
+        plans[plan_name] = {
+            "price_usd": pricing_info["price_usd"],
+            "billing": "free" if plan_name == "free" else "monthly",
+            "limits": pricing_info["limits"],
+        }
+    return {"plans": plans}
