@@ -5,6 +5,7 @@ Skipped automatically when OPENAI_API_KEY is not set.
 """
 import pytest
 from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
 from app.config import settings
 
@@ -12,6 +13,17 @@ pytestmark = pytest.mark.eval
 
 _SKIP = not settings.openrouter_api_key
 skip_reason = "OPENROUTER_API_KEY not set"
+
+EVAL_MODEL = "openrouter/owl-alpha"
+
+
+def _eval_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=EVAL_MODEL,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        default_headers={"HTTP-Referer": f"https://{settings.app_domain}"},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -26,9 +38,7 @@ async def test_triage_specific_question():
 
     from app.graph.nodes.triage import _TRIAGE_PROMPT
     from app.schemas.triage import TriageDecision
-    from app.services.llm import get_chat_llm
-
-    llm = get_chat_llm()
+    llm = _eval_llm()
     result: TriageDecision = await llm.with_structured_output(TriageDecision).ainvoke([
         SystemMessage(content=_TRIAGE_PROMPT),
         HumanMessage(content="¿Cuál es el precio del plan premium?"),
@@ -42,9 +52,7 @@ async def test_triage_catalog_request():
     """Request full price list → catalog."""
     from app.graph.nodes.triage import _TRIAGE_PROMPT
     from app.schemas.triage import TriageDecision
-    from app.services.llm import get_chat_llm
-
-    llm = get_chat_llm()
+    llm = _eval_llm()
     result: TriageDecision = await llm.with_structured_output(TriageDecision).ainvoke([
         SystemMessage(content=_TRIAGE_PROMPT),
         HumanMessage(content="¿Pueden enviarme el catálogo completo con todos los precios?"),
@@ -58,9 +66,7 @@ async def test_triage_human_escalation():
     """Explicit request to speak with agent → human."""
     from app.graph.nodes.triage import _TRIAGE_PROMPT
     from app.schemas.triage import TriageDecision
-    from app.services.llm import get_chat_llm
-
-    llm = get_chat_llm()
+    llm = _eval_llm()
     result: TriageDecision = await llm.with_structured_output(TriageDecision).ainvoke([
         SystemMessage(content=_TRIAGE_PROMPT),
         HumanMessage(content="Necesito hablar con una persona, por favor conéctame con un agente."),
@@ -74,9 +80,7 @@ async def test_triage_off_topic():
     """Completely unrelated question → off_topic (never rag/catalog/human)."""
     from app.graph.nodes.triage import _TRIAGE_PROMPT
     from app.schemas.triage import TriageDecision
-    from app.services.llm import get_chat_llm
-
-    llm = get_chat_llm()
+    llm = _eval_llm()
     result: TriageDecision = await llm.with_structured_output(TriageDecision).ainvoke([
         SystemMessage(content=_TRIAGE_PROMPT),
         HumanMessage(content="Cuéntame un chiste de programadores, nada que ver con el negocio."),
@@ -104,7 +108,7 @@ async def test_generate_uses_context():
         context=context,
         format_hint=_FORMAT_HINT,
     )
-    llm = get_chat_llm()
+    llm = _eval_llm()
     response = await llm.ainvoke([
         SystemMessage(content=system),
         HumanMessage(content="¿Cuánto cuesta el plan básico?"),
@@ -126,7 +130,7 @@ async def test_generate_admits_missing_context():
         context=context,
         format_hint=_FORMAT_HINT,
     )
-    llm = get_chat_llm()
+    llm = _eval_llm()
     response = await llm.ainvoke([
         SystemMessage(content=system),
         HumanMessage(content="¿Cuál es el precio del plan enterprise?"),

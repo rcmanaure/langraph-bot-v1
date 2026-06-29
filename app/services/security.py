@@ -24,6 +24,14 @@ _INJECTION_RE = re.compile(
     r"|from\s+now\s+on\s+(you|ignore)"
     r"|reveal\s+(your\s+)?(system\s+)?prompt"
     r"|print\s+(your\s+)?(system\s+)?prompt"
+    # Spanish variants
+    r"|ignora\s+(tus?\s+|todas?\s+las?\s+)?(instrucciones|reglas|prompt)"
+    r"|olvida\s+(todas?\s+las?\s+)?(instrucciones|reglas|todo\s+lo\s+anterior)"
+    r"|act[uú]a\s+como\s+si"
+    r"|desde\s+ahora\s+ignora"
+    r"|revelar?\s+(tu\s+)?(prompt|instrucciones|sistema)"
+    r"|mostrar?\s+(tu\s+)?(prompt|instrucciones)"
+    r"|sin\s+restricciones"
     r"|CANARY_KEY:)",
     re.IGNORECASE | re.DOTALL,
 )

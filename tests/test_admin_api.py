@@ -17,16 +17,17 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.auth import verify_operator_key
-from app.routes.admin import router
+from app.routes.admin import router, public_router
 
 SECRET_KEY = "test-secret-key-for-unit-tests"
-OPERATOR_KEY = hashlib.sha256(SECRET_KEY.encode()).hexdigest()
+OPERATOR_KEY = SECRET_KEY  # clients send raw token; auth.py compares directly
 
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
 def make_app(bypass_auth=True) -> FastAPI:
     app = FastAPI()
+    app.include_router(public_router)
     app.include_router(router)
     if bypass_auth:
         app.dependency_overrides[verify_operator_key] = lambda: None
@@ -99,8 +100,6 @@ async def test_correct_auth_key_proceeds():
 async def test_operator_token_takes_priority_over_secret_key():
     """When OPERATOR_TOKEN is set, SECRET_KEY is not used for auth."""
     op_token = "special-operator-token"
-    expected_hash = hashlib.sha256(op_token.encode()).hexdigest()
-    old_hash = hashlib.sha256(SECRET_KEY.encode()).hexdigest()
 
     app = make_app(bypass_auth=False)
     with patch("app.auth.settings") as mock_settings:
@@ -116,14 +115,14 @@ async def test_operator_token_takes_priority_over_secret_key():
         ctx.__aexit__ = AsyncMock(return_value=None)
 
         with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx):
-            # Old key (from secret_key) is rejected
+            # secret_key is rejected when operator_token is set
             r = await _request(app, "get", "/admin/tenants",
-                               headers={"x-operator-key": old_hash})
+                               headers={"x-operator-key": SECRET_KEY})
             assert r.status_code == 401
 
-            # New key (from operator_token) is accepted
+            # operator_token raw value is accepted
             r = await _request(app, "get", "/admin/tenants",
-                               headers={"x-operator-key": expected_hash})
+                               headers={"x-operator-key": op_token})
             assert r.status_code == 200
 
 
@@ -278,13 +277,14 @@ async def test_create_index_job_valid_returns_202_with_job_id():
     """Valid upload → 201 with job_id and status PENDING."""
     app = make_app()
 
-    tenant_row = MagicMock()
-    tenant_row.id = 1
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")  # (tenant_id, plan) — supports tuple unpacking
     tenant_result = MagicMock()
     tenant_result.first.return_value = tenant_row
 
     session = AsyncMock()
     session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=0)  # 0 existing docs — under free limit
     session.add = MagicMock()
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
@@ -428,10 +428,8 @@ async def test_get_billing_returns_plan_usage():
     """GET /admin/billing returns plan, usage, and pricing info."""
     app = make_app()
 
-    # Mock tenant lookup
-    tenant_row = MagicMock()
-    tenant_row[0] = 1  # tenant_id
-    tenant_row[1] = "basic"  # plan
+    # Mock tenant lookup — tuple supports `tenant_id, plan = tenant` unpacking
+    tenant_row = (1, "basic")
     tenant_result = MagicMock()
     tenant_result.first.return_value = tenant_row
 
