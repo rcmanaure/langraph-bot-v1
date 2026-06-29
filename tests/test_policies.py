@@ -1,6 +1,4 @@
 """Test plan-based policy enforcement."""
-import pytest
-
 from app.policies import TenantPolicy
 
 

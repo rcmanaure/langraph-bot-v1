@@ -15,6 +15,8 @@ from app.models import IndexJob, IndexJobStatus
 from app.policies import TenantPolicy
 from app.services.indexer import run_index_job
 
+_bg_tasks: set[asyncio.Task] = set()
+
 router = APIRouter(prefix="/admin", tags=["admin"])
 public_router = APIRouter(tags=["billing"])
 templates = Jinja2Templates(directory="app/templates")
@@ -129,7 +131,7 @@ async def create_index_job(
         await db.commit()
         job_id = job.id
 
-    asyncio.create_task(
+    task = asyncio.create_task(
         run_index_job(
             job_id=job_id,
             content=content,
@@ -138,6 +140,8 @@ async def create_index_job(
             namespace=tenant_slug,
         )
     )
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
     return {"job_id": str(job_id), "status": "PENDING"}
 
 
