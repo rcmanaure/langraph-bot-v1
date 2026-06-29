@@ -3,8 +3,6 @@ import hashlib
 import secrets
 import uuid
 
-_bg_tasks: set[asyncio.Task] = set()
-
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
@@ -16,6 +14,8 @@ from app.db import AsyncSessionLocal
 from app.models import IndexJob, IndexJobStatus
 from app.policies import TenantPolicy
 from app.services.indexer import run_index_job
+
+_bg_tasks: set[asyncio.Task] = set()
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 public_router = APIRouter(tags=["billing"])

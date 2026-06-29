@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.auth import verify_operator_key
-from app.routes.admin import router, public_router
+from app.routes.admin import public_router, router
 
 SECRET_KEY = "test-secret-key-for-unit-tests"
 OPERATOR_KEY = SECRET_KEY  # clients send raw token; auth.py compares directly

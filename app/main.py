@@ -12,7 +12,8 @@ from app.channels.telegram import router as telegram_router
 from app.channels.whatsapp import router as whatsapp_router
 from app.config import settings
 from app.middleware.security import add_security_middleware
-from app.routes.admin import router as admin_router, public_router as pricing_router
+from app.routes.admin import public_router as pricing_router
+from app.routes.admin import router as admin_router
 from app.routes.operator import router as operator_router
 
 logger = logging.getLogger(__name__)

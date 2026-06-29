@@ -116,7 +116,7 @@ async def test_pulmon_all_procedures_in_context():
 
     with patch("app.graph.nodes.generate._load_tenant", AsyncMock(return_value=TENANT_CTX)), \
          patch("app.graph.nodes.generate.get_chat_llm", return_value=llm):
-        result = await generate(state)
+        await generate(state)
 
     ctx = _captured_system(llm)
     assert "SRP009" in ctx
@@ -479,8 +479,6 @@ async def test_generate_uses_fallback_llm_on_primary_failure():
     fallback_llm.ainvoke = AsyncMock(
         return_value=AIMessage(content="Pulmón: PAFF $90, Cuña $180, Lobectomía $240, Neumonectomía $360")
     )
-
-    call_count = 0
 
     def llm_factory(fallback=False):
         return fallback_llm if fallback else primary_llm
