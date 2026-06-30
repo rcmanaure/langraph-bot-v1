@@ -2,9 +2,10 @@ import hashlib
 import hmac
 import json
 import logging
+from collections import OrderedDict
 
 import httpx
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Header, Query, Request
 from fastapi.responses import PlainTextResponse
 from langchain_core.messages import HumanMessage
 from sqlalchemy import text
@@ -18,6 +19,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/webhook", tags=["whatsapp"])
 
 _WA = "https://graph.facebook.com/v20.0"
+
+# Dedup cache: wamid → True. Bounded to 1000 entries (LRU).
+_SEEN_WA: OrderedDict[str, bool] = OrderedDict()
+_SEEN_WA_MAX = 1000
+
+
+def _is_duplicate_wa(msg_id: str) -> bool:
+    if msg_id in _SEEN_WA:
+        return True
+    _SEEN_WA[msg_id] = True
+    if len(_SEEN_WA) > _SEEN_WA_MAX:
+        _SEEN_WA.popitem(last=False)
+    return False
 
 
 class WhatsAppAdapter:
@@ -112,8 +126,11 @@ async def whatsapp_verify(
 async def whatsapp_webhook(
     tenant_slug: str,
     request: Request,
+    background_tasks: BackgroundTasks,
     x_hub_signature_256: str | None = Header(None),
 ):
+    # Always return 200 fast — Meta retries on timeout, causing duplicate processing.
+    # All heavy work (LLM) runs in background AFTER this handler returns.
     body_bytes = await request.body()
 
     async with AsyncSessionLocal() as db:
@@ -153,7 +170,12 @@ async def whatsapp_webhook(
             if change.get("field") != "messages":
                 continue
             for msg in change.get("value", {}).get("messages", []):
-                await _handle_message(
+                msg_id = msg.get("id", "")
+                if msg_id and _is_duplicate_wa(msg_id):
+                    logger.info("wa_duplicate_msg wamid=%s tenant=%s", msg_id, tenant_slug)
+                    continue
+                background_tasks.add_task(
+                    _handle_message,
                     request=request,
                     tenant_slug=tenant_slug,
                     phone_number_id=row.wa_phone_number_id,
@@ -212,7 +234,7 @@ async def _handle_message(
     try:
         result = await request.app.state.graph.ainvoke(
             {"tenant_id": tenant_slug, "thread_id": thread_id,
-             "messages": [HumanMessage(content=text_content)]},
+             "messages": [HumanMessage(content=text_content)], "answer": ""},
             config={"configurable": {"thread_id": thread_id}},
         )
         response = result.get("answer") or ""
