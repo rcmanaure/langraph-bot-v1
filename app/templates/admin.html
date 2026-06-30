@@ -9,6 +9,11 @@
   <style>
     [x-cloak] { display: none !important; }
     .field { @apply w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white; }
+    @keyframes flash-green {
+      0%, 100% { background-color: transparent; }
+      20%, 80% { background-color: #dcfce7; }
+    }
+    .flash-success { animation: flash-green 2s ease-in-out; }
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans" x-data="admin()" x-init="init()" x-cloak>
@@ -38,7 +43,7 @@
             required
           >
         </div>
-        <div x-show="loginError" class="mb-3 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="loginError"></div>
+        <div x-show="loginError" role="alert" class="mb-3 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="loginError"></div>
         <button
           type="submit"
           :disabled="loginLoading"
@@ -67,11 +72,11 @@
           <span class="font-semibold text-gray-900 text-sm hidden sm:block">Admin Panel</span>
         </div>
 
-        <div class="flex items-center gap-1">
-          <button @click="setTab('tenants')" :class="tab==='tenants' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Tenants</button>
-          <button @click="setTab('upload')" :class="tab==='upload' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Documents</button>
-          <button @click="setTab('jobs')" :class="tab==='jobs' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Jobs</button>
-        </div>
+        <nav aria-label="Main navigation" class="flex items-center gap-1">
+          <button @click="setTab('tenants')" :aria-current="tab==='tenants' ? 'page' : false" :class="tab==='tenants' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Tenants</button>
+          <button @click="setTab('upload')" :aria-current="tab==='upload' ? 'page' : false" :class="tab==='upload' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Documents</button>
+          <button @click="setTab('jobs')" :aria-current="tab==='jobs' ? 'page' : false" :class="tab==='jobs' ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-600 hover:bg-gray-100'" class="px-3 py-1.5 rounded-lg text-sm transition-colors">Jobs</button>
+        </nav>
 
         <button @click="logout()" class="text-xs text-gray-400 hover:text-gray-600 transition-colors px-2 py-1 rounded hover:bg-gray-100">Sign out</button>
       </div>
@@ -127,7 +132,7 @@
               <label class="block text-xs font-medium text-gray-700 mb-1">Contact URL</label>
               <input x-model="newTenant.contact_url" type="url" placeholder="https://wa.me/..." class="field">
             </div>
-            <div x-show="tenantError" class="sm:col-span-2 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="tenantError"></div>
+            <div x-show="tenantError" role="alert" class="sm:col-span-2 text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="tenantError"></div>
             <div x-show="tenantSuccess" class="sm:col-span-2 rounded-lg bg-green-50 border border-green-200 px-4 py-3">
               <p class="text-sm text-green-700 font-medium" x-text="tenantSuccess"></p>
               <template x-if="newApiKey">
@@ -159,19 +164,33 @@
             <button @click="showAddTenant=true" class="mt-2 text-sm text-blue-600 hover:underline">Create the first one</button>
           </div>
           <div x-show="!tenantsLoading && tenants.length > 0" class="overflow-x-auto">
-            <table class="w-full text-sm">
+            <table class="w-full text-sm" aria-label="Tenant list">
               <thead class="bg-gray-50 border-b border-gray-200">
                 <tr>
                   <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Slug</th>
                   <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden sm:table-cell">Expertise</th>
                   <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Plan</th>
                   <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden sm:table-cell">Webhook</th>
                   <th class="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider hidden md:table-cell">Created</th>
+                  <th class="px-4 py-3 w-8" aria-hidden="true"></th>
                 </tr>
               </thead>
-              <tbody class="divide-y divide-gray-100">
-                <template x-for="t in tenants" :key="t.id">
-                  <tr class="hover:bg-gray-50 transition-colors">
+              <!-- One <tbody> per tenant: data row + edit panel row -->
+              <template x-for="t in tenants" :key="t.id">
+                <tbody>
+                  <!-- Data row -->
+                  <tr
+                    @click="toggleExpand(t)"
+                    @keydown.enter.prevent="toggleExpand(t)"
+                    @keydown.escape.prevent="cancelEdit()"
+                    tabindex="0"
+                    class="hover:bg-gray-50 transition-colors cursor-pointer select-none border-b border-gray-100 focus:outline-none focus:ring-2 focus:ring-inset focus:ring-blue-500"
+                    :class="{
+                      'bg-blue-50/50 border-gray-200': expandedId === t.id,
+                      'flash-success': flashRowId === t.id
+                    }"
+                  >
                     <td class="px-4 py-3 font-mono text-blue-700 font-medium text-xs" x-text="t.slug"></td>
                     <td class="px-4 py-3 text-gray-600 text-xs hidden sm:table-cell max-w-xs truncate" x-text="t.expertise_area || '—'"></td>
                     <td class="px-4 py-3">
@@ -180,10 +199,340 @@
                     <td class="px-4 py-3">
                       <span :class="t.active ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'" class="px-2 py-0.5 rounded-full text-xs font-medium" x-text="t.active ? 'Active' : 'Inactive'"></span>
                     </td>
+                    <!-- Webhook badge -->
+                    <td class="px-4 py-3 hidden sm:table-cell">
+                      <div class="flex items-center gap-1.5">
+                        <template x-if="(webhookStatus[t.slug] || 'unknown') !== 'checking'">
+                          <span class="w-2 h-2 rounded-full flex-shrink-0" :class="{
+                            'bg-green-500': (webhookStatus[t.slug] || 'unknown') === 'registered',
+                            'bg-yellow-500': (webhookStatus[t.slug] || 'unknown') === 'mismatch',
+                            'bg-gray-400': (webhookStatus[t.slug] || 'unknown') === 'unknown',
+                            'bg-red-400':   (webhookStatus[t.slug] || 'unknown') === 'error'
+                          }"></span>
+                        </template>
+                        <template x-if="(webhookStatus[t.slug] || 'unknown') === 'checking'">
+                          <svg class="animate-spin w-3 h-3 text-blue-500 flex-shrink-0" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                          </svg>
+                        </template>
+                        <span class="text-xs" :class="{
+                          'text-green-700': (webhookStatus[t.slug] || 'unknown') === 'registered',
+                          'text-yellow-700': (webhookStatus[t.slug] || 'unknown') === 'mismatch',
+                          'text-gray-500':  (webhookStatus[t.slug] || 'unknown') === 'unknown',
+                          'text-red-600':   (webhookStatus[t.slug] || 'unknown') === 'error',
+                          'text-blue-500':  (webhookStatus[t.slug] || 'unknown') === 'checking'
+                        }" x-text="webhookLabel(t.slug)"></span>
+                        <button
+                          @click.stop="checkWebhook(t.slug, $event)"
+                          :aria-label="'Check webhook status for ' + t.slug"
+                          :disabled="(webhookStatus[t.slug] || 'unknown') === 'checking'"
+                          class="p-2.5 -m-1 rounded hover:bg-gray-100 text-gray-400 hover:text-gray-600 transition-colors disabled:opacity-40"
+                        >
+                          <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                          </svg>
+                        </button>
+                      </div>
+                    </td>
                     <td class="px-4 py-3 text-gray-400 text-xs hidden md:table-cell" x-text="fmtDate(t.created_at)"></td>
+                    <!-- Chevron -->
+                    <td class="px-4 py-3 text-right">
+                      <svg class="w-4 h-4 text-gray-400 inline-block transition-transform duration-150"
+                        :class="expandedId === t.id ? 'rotate-90' : ''"
+                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                      </svg>
+                    </td>
                   </tr>
-                </template>
-              </tbody>
+
+                  <!-- Edit panel row -->
+                  <tr x-show="expandedId === t.id" style="display:none">
+                    <td colspan="7" class="p-0 border-b border-gray-200">
+                      <div
+                        :id="'edit-panel-' + t.id"
+                        class="bg-white border-x border-b border-gray-200 rounded-b-xl overflow-hidden"
+                        x-show="expandedId === t.id"
+                        x-transition:enter="transition ease-out duration-150"
+                        x-transition:enter-start="opacity-0 -translate-y-1"
+                        x-transition:enter-end="opacity-100 translate-y-0"
+                      >
+                        <div class="p-5">
+
+                          <!-- Panel header -->
+                          <div class="flex items-center justify-between mb-5">
+                            <span class="font-mono text-blue-600 font-semibold text-sm" x-text="t.slug"></span>
+                            <div class="flex items-center gap-2">
+                              <button
+                                type="button"
+                                @click="cancelEdit()"
+                                :disabled="editLoading"
+                                class="text-sm text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors disabled:opacity-50"
+                              >Cancel</button>
+                              <button
+                                type="button"
+                                @click="saveEdit(t)"
+                                :disabled="!editDirty || editLoading"
+                                class="text-sm bg-blue-600 text-white px-4 py-1.5 rounded-lg hover:bg-blue-700 disabled:opacity-40 transition-colors flex items-center gap-2"
+                              >
+                                <svg x-show="editLoading" class="animate-spin w-3.5 h-3.5" fill="none" viewBox="0 0 24 24">
+                                  <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                                  <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+                                </svg>
+                                <span x-text="editLoading ? 'Saving…' : 'Save changes'"></span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <!-- Error / webhook-not-registered banner -->
+                          <div x-show="editError" role="alert" class="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3" x-text="editError"></div>
+                          <div x-show="editWebhookWarn" role="alert" class="mb-4 text-sm text-yellow-800 bg-yellow-50 border border-yellow-200 rounded-lg px-4 py-3">
+                            Webhook registration failed — check Telegram bot token and try again.
+                          </div>
+
+                          <!-- Section 1: Telegram -->
+                          <div class="mb-5">
+                            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Telegram</p>
+                            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'bot-token-' + t.id">Telegram Bot Token</label>
+                                <div class="relative">
+                                  <input
+                                    :id="'bot-token-' + t.id"
+                                    :type="revealBotToken ? 'text' : 'password'"
+                                    x-model="editForm.bot_token"
+                                    @input="markDirty()"
+                                    :disabled="editLoading"
+                                    placeholder="Enter new token to change (leave blank to keep current)"
+                                    aria-label="Telegram Bot Token"
+                                    autocomplete="off"
+                                    class="field pr-10"
+                                  >
+                                  <button type="button" @click="revealBotToken = !revealBotToken" :aria-label="revealBotToken ? 'Hide bot token' : 'Show bot token'" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1">
+                                    <svg x-show="!revealBotToken" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                    <svg x-show="revealBotToken" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
+                                  </button>
+                                </div>
+                              </div>
+                              <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'wh-secret-' + t.id">Webhook Secret</label>
+                                <div class="relative">
+                                  <input
+                                    :id="'wh-secret-' + t.id"
+                                    :type="revealWebhookSecret ? 'text' : 'password'"
+                                    x-model="editForm.webhook_secret"
+                                    @input="markDirty()"
+                                    :disabled="editLoading"
+                                    placeholder="Enter new secret to change (leave blank to keep current)"
+                                    aria-label="Webhook Secret"
+                                    autocomplete="off"
+                                    class="field pr-10"
+                                  >
+                                  <button type="button" @click="revealWebhookSecret = !revealWebhookSecret" :aria-label="revealWebhookSecret ? 'Hide webhook secret' : 'Show webhook secret'" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1">
+                                    <svg x-show="!revealWebhookSecret" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                    <svg x-show="revealWebhookSecret" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Section 2: Configuration -->
+                          <div class="mb-5">
+                            <p class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-3">Configuration</p>
+                            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                              <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'plan-' + t.id">Plan</label>
+                                <select :id="'plan-' + t.id" x-model="editForm.plan" @change="markDirty()" :disabled="editLoading" class="field">
+                                  <option value="free">Free</option>
+                                  <option value="basic">Basic</option>
+                                  <option value="pro">Pro</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'expertise-' + t.id">Expertise area</label>
+                                <input :id="'expertise-' + t.id" type="text" x-model="editForm.expertise_area" @input="markDirty()" :disabled="editLoading" placeholder="histological diagnosis" class="field">
+                              </div>
+                              <div class="sm:col-span-2">
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'contact-' + t.id">Contact URL</label>
+                                <input :id="'contact-' + t.id" type="url" x-model="editForm.contact_url" @input="markDirty()" :disabled="editLoading" placeholder="https://wa.me/..." class="field">
+                              </div>
+                              <!-- Active toggle -->
+                              <div class="sm:col-span-2">
+                                <label class="flex items-center gap-3 cursor-pointer" :class="editLoading ? 'opacity-50' : ''">
+                                  <div class="relative flex-shrink-0">
+                                    <input
+                                      type="checkbox"
+                                      class="sr-only peer"
+                                      x-model="editForm.active"
+                                      @change="markDirty()"
+                                      :disabled="editLoading"
+                                      aria-label="Toggle tenant active state"
+                                    >
+                                    <div class="w-11 h-6 bg-gray-200 rounded-full peer-checked:bg-green-500 transition-colors duration-200"></div>
+                                    <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 peer-checked:translate-x-5"></div>
+                                  </div>
+                                  <span class="text-sm text-gray-700" x-text="editForm.active ? 'Active — Telegram delivers messages' : 'Inactive — webhook will be unregistered on save'"></span>
+                                </label>
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Section 3: WhatsApp (collapsible) -->
+                          <div class="mb-5">
+                            <button
+                              type="button"
+                              @click="waExpanded = !waExpanded"
+                              class="flex items-center gap-2 text-xs font-semibold text-gray-500 uppercase tracking-wider hover:text-gray-700 transition-colors"
+                            >
+                              <svg class="w-3.5 h-3.5 transition-transform duration-150" :class="waExpanded ? 'rotate-90' : ''" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+                              </svg>
+                              WhatsApp settings
+                            </button>
+                            <div
+                              x-show="waExpanded"
+                              x-transition:enter="transition ease-out duration-150"
+                              x-transition:enter-start="opacity-0 -translate-y-1"
+                              x-transition:enter-end="opacity-100 translate-y-0"
+                              class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2"
+                            >
+                              <div class="sm:col-span-2">
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'wa-phone-' + t.id">Phone Number ID</label>
+                                <input :id="'wa-phone-' + t.id" type="text" x-model="editForm.wa_phone_number_id" @input="markDirty()" :disabled="editLoading" placeholder="123456789012345" class="field">
+                              </div>
+                              <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'wa-token-' + t.id">Access Token</label>
+                                <div class="relative">
+                                  <input :id="'wa-token-' + t.id" :type="revealWaToken ? 'text' : 'password'" x-model="editForm.wa_access_token" @input="markDirty()" :disabled="editLoading" placeholder="EAABs..." aria-label="WhatsApp Access Token" autocomplete="off" class="field pr-10">
+                                  <button type="button" @click="revealWaToken = !revealWaToken" :aria-label="revealWaToken ? 'Hide WA token' : 'Show WA token'" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                  </button>
+                                </div>
+                              </div>
+                              <div>
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'wa-secret-' + t.id">App Secret</label>
+                                <div class="relative">
+                                  <input :id="'wa-secret-' + t.id" :type="revealWaSecret ? 'text' : 'password'" x-model="editForm.wa_app_secret" @input="markDirty()" :disabled="editLoading" placeholder="app secret" aria-label="WhatsApp App Secret" autocomplete="off" class="field pr-10">
+                                  <button type="button" @click="revealWaSecret = !revealWaSecret" :aria-label="revealWaSecret ? 'Hide WA secret' : 'Show WA secret'" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 p-1">
+                                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
+                                  </button>
+                                </div>
+                              </div>
+                              <div class="sm:col-span-2">
+                                <label class="block text-xs font-medium text-gray-700 mb-1" :for="'wa-verify-' + t.id">Verify Token</label>
+                                <input :id="'wa-verify-' + t.id" type="text" x-model="editForm.wa_verify_token" @input="markDirty()" :disabled="editLoading" placeholder="my-verify-token" class="field">
+                              </div>
+                            </div>
+                          </div>
+
+                          <!-- Danger zone -->
+                          <div class="border-t border-red-100 mt-4 pt-4">
+                            <p class="text-xs font-semibold text-red-400 uppercase tracking-wider mb-3">Danger zone</p>
+                            <div class="flex flex-col gap-3">
+
+                              <!-- Regen API key -->
+                              <div>
+                                <template x-if="regenStep === 'initial'">
+                                  <button
+                                    type="button"
+                                    @click="startRegen()"
+                                    :disabled="editDirty || editLoading"
+                                    :title="editDirty ? 'Save or discard changes first' : ''"
+                                    class="text-sm text-gray-600 border border-gray-300 px-3 py-1.5 rounded-lg hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                                  >
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+                                    Regenerate API key
+                                  </button>
+                                </template>
+                                <template x-if="regenStep === 'confirm'">
+                                  <div class="bg-gray-50 border border-gray-200 rounded-lg px-4 py-3 text-sm text-gray-700">
+                                    This immediately invalidates the current API key. Apps using it will stop working.
+                                    <div class="flex items-center gap-2 mt-2">
+                                      <button type="button" @click="doRegen(t)" class="bg-gray-800 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-gray-900 transition-colors">Confirm</button>
+                                      <button type="button" @click="cancelRegen()" class="text-xs text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">Cancel</button>
+                                    </div>
+                                  </div>
+                                </template>
+                                <template x-if="regenStep === 'loading'">
+                                  <div class="flex items-center gap-2 text-sm text-gray-500">
+                                    <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                    Regenerating…
+                                  </div>
+                                </template>
+                                <template x-if="regenStep === 'error'">
+                                  <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                                    <p class="text-sm text-red-700" x-text="regenError"></p>
+                                    <button type="button" @click="cancelRegen()" class="mt-1 text-xs text-red-600 underline">Try again</button>
+                                  </div>
+                                </template>
+                                <template x-if="regenStep === 'success'">
+                                  <div class="bg-green-50 border border-green-200 rounded-lg px-4 py-3">
+                                    <p class="text-sm text-green-800 font-medium mb-2">New API key — save it now, it won't be shown again.</p>
+                                    <div class="flex items-center gap-2">
+                                      <code class="flex-1 text-xs bg-green-100 rounded px-2 py-1.5 break-all font-mono text-green-900" x-text="regenNewKey"></code>
+                                      <button type="button" @click="copyToClipboard(regenNewKey)" title="Copy" class="p-1.5 text-green-700 hover:bg-green-100 rounded flex-shrink-0">
+                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
+                                      </button>
+                                    </div>
+                                    <button type="button" @click="dismissRegen()" class="mt-2 text-xs text-green-700 underline hover:no-underline">I've saved this key</button>
+                                  </div>
+                                </template>
+                              </div>
+
+                              <!-- Delete tenant -->
+                              <div>
+                                <template x-if="deleteStep === 'initial'">
+                                  <button
+                                    type="button"
+                                    @click="startDelete()"
+                                    :disabled="editLoading"
+                                    class="text-sm text-red-600 border border-red-200 px-3 py-1.5 rounded-lg hover:bg-red-50 disabled:opacity-40 transition-colors flex items-center gap-1.5"
+                                  >
+                                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
+                                    Delete tenant
+                                  </button>
+                                </template>
+                                <template x-if="deleteStep === 'confirm' || deleteStep === 'loading' || deleteStep === 'error'">
+                                  <div class="bg-red-50 border border-red-200 rounded-lg px-4 py-3">
+                                    <p class="text-sm text-red-800 mb-3">
+                                      Type <code class="font-mono font-bold bg-red-100 px-1 rounded" x-text="t.slug"></code> to confirm permanent deletion of this tenant and all its data.
+                                    </p>
+                                    <div x-show="deleteError" role="alert" class="text-xs text-red-700 bg-red-100 rounded px-3 py-2 mb-2" x-text="deleteError"></div>
+                                    <input
+                                      type="text"
+                                      x-model="deleteInput"
+                                      :disabled="deleteStep === 'loading'"
+                                      :placeholder="t.slug"
+                                      aria-label="Type tenant slug to confirm deletion"
+                                      autocomplete="off"
+                                      class="field mb-2 font-mono text-xs"
+                                    >
+                                    <div class="flex items-center gap-2">
+                                      <button
+                                        type="button"
+                                        @click="doDelete(t)"
+                                        :disabled="deleteInput !== t.slug || deleteStep === 'loading'"
+                                        class="bg-red-600 text-white text-xs px-3 py-1.5 rounded-lg hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-1.5"
+                                      >
+                                        <svg x-show="deleteStep === 'loading'" class="animate-spin w-3 h-3" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                                        <span x-text="deleteStep === 'loading' ? 'Deleting…' : 'Delete'"></span>
+                                      </button>
+                                      <button type="button" @click="cancelDelete()" :disabled="deleteStep === 'loading'" class="text-xs text-gray-600 px-3 py-1.5 rounded-lg hover:bg-gray-100 disabled:opacity-50 transition-colors">Cancel</button>
+                                    </div>
+                                  </div>
+                                </template>
+                              </div>
+
+                            </div>
+                          </div>
+
+                        </div><!-- /panel body -->
+                      </div><!-- /edit panel div -->
+                    </td>
+                  </tr>
+                </tbody>
+              </template>
             </table>
           </div>
         </div>
@@ -207,12 +556,17 @@
             <div>
               <label class="block text-sm font-medium text-gray-700 mb-1">File <span class="text-red-500">*</span></label>
               <div
-                class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors"
+                class="border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500"
                 :class="up.dragging ? 'border-blue-500 bg-blue-50' : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50/50'"
+                role="button"
+                tabindex="0"
+                :aria-label="up.file ? 'Selected file: ' + up.file.name + '. Click to change.' : 'Click or press Enter to select a file'"
                 @dragover.prevent="up.dragging=true"
                 @dragleave="up.dragging=false"
                 @drop.prevent="dropFile($event)"
                 @click="$refs.fileInput.click()"
+                @keydown.enter.prevent="$refs.fileInput.click()"
+                @keydown.space.prevent="$refs.fileInput.click()"
               >
                 <template x-if="!up.file">
                   <div>
@@ -257,7 +611,7 @@
               </div>
             </div>
 
-            <div x-show="up.uploadErr" class="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="up.uploadErr"></div>
+            <div x-show="up.uploadErr" role="alert" class="text-sm text-red-600 bg-red-50 rounded-lg px-3 py-2" x-text="up.uploadErr"></div>
 
             <button
               type="submit"
@@ -349,12 +703,14 @@
   <script>
     function admin() {
       return {
+        // ── Auth ──
         authenticated: false,
         loginKey: '',
         loginLoading: false,
         loginError: '',
         tab: 'tenants',
 
+        // ── Tenants list ──
         tenants: [],
         tenantsLoading: false,
         showAddTenant: false,
@@ -364,14 +720,43 @@
         tenantSuccess: '',
         newApiKey: '',
 
+        // ── Inline edit panel (T8) ──
+        expandedId: null,
+        editForm: {},
+        editDirty: false,
+        editLoading: false,
+        editError: '',
+        editWebhookWarn: false,
+        flashRowId: null,
+
+        revealBotToken: false,
+        revealWebhookSecret: false,
+        revealWaToken: false,
+        revealWaSecret: false,
+        waExpanded: false,
+
+        webhookStatus: {},
+        webhookChecking: {},
+
+        regenStep: 'initial',
+        regenNewKey: '',
+        regenError: '',
+
+        deleteStep: 'initial',
+        deleteInput: '',
+        deleteError: '',
+
+        // ── Upload ──
         up: { tenant:'', file:null, dragging:false, loading:false, uploadErr:'', jobId:null, status:'', pct:0, total:0, done:0, err:'' },
 
+        // ── Jobs ──
         jobs: [],
         jobsLoading: false,
         jobsFilter: '',
 
+        // ── Internals ──
         _key() { return localStorage.getItem('admin_key') || '' },
-        _h() { return { 'X-Operator-Key': this._key() } },
+        _h()   { return { 'X-Operator-Key': this._key() } },
 
         async init() {
           const saved = localStorage.getItem('admin_key')
@@ -418,7 +803,14 @@
           this.tenantsLoading = true
           try {
             const r = await fetch('/admin/tenants', { headers: this._h() })
-            if (r.ok) this.tenants = await r.json()
+            if (r.ok) {
+              this.tenants = await r.json()
+              this.tenants.forEach(t => {
+                if (!(t.slug in this.webhookStatus)) {
+                  this.webhookStatus = { ...this.webhookStatus, [t.slug]: 'unknown' }
+                }
+              })
+            }
           } catch {}
           this.tenantsLoading = false
         },
@@ -451,6 +843,215 @@
           this.newTenant = { slug:'', bot_token:'', webhook_secret:'', expertise_area:'', contact_url:'', plan:'free' }
           this.tenantError = ''
         },
+
+        // ── T8: Edit panel ──
+
+        _resetEditState() {
+          this.editForm = {}
+          this.editDirty = false
+          this.editError = ''
+          this.editWebhookWarn = false
+          this.revealBotToken = false
+          this.revealWebhookSecret = false
+          this.revealWaToken = false
+          this.revealWaSecret = false
+          this.waExpanded = false
+          this.regenStep = 'initial'
+          this.regenNewKey = ''
+          this.regenError = ''
+          this.deleteStep = 'initial'
+          this.deleteInput = ''
+          this.deleteError = ''
+        },
+
+        toggleExpand(t) {
+          if (this.expandedId === t.id) {
+            this.expandedId = null
+            return
+          }
+          this.expandedId = t.id
+          this._resetEditState()
+          this.editForm = {
+            plan: t.plan,
+            expertise_area: t.expertise_area || '',
+            contact_url: t.contact_url || '',
+            active: t.active,
+            bot_token: '',
+            webhook_secret: '',
+            wa_phone_number_id: '',
+            wa_access_token: '',
+            wa_app_secret: '',
+            wa_verify_token: '',
+          }
+          this.$nextTick(() => {
+            const panel = document.getElementById('edit-panel-' + t.id)
+            if (panel) panel.querySelector('input:not([disabled]),select:not([disabled])')?.focus()
+          })
+        },
+
+        cancelEdit() {
+          this.expandedId = null
+          this._resetEditState()
+        },
+
+        markDirty() {
+          this.editDirty = true
+        },
+
+        async saveEdit(t) {
+          this.editLoading = true
+          this.editError = ''
+          this.editWebhookWarn = false
+
+          const payload = {
+            plan: this.editForm.plan,
+            expertise_area: this.editForm.expertise_area || null,
+            contact_url: this.editForm.contact_url || null,
+            active: this.editForm.active,
+          }
+          // Only include credential fields when the operator actually typed a value
+          if (this.editForm.bot_token)       payload.bot_token       = this.editForm.bot_token
+          if (this.editForm.webhook_secret)  payload.webhook_secret  = this.editForm.webhook_secret
+          if (this.editForm.wa_phone_number_id) payload.wa_phone_number_id = this.editForm.wa_phone_number_id
+          if (this.editForm.wa_access_token) payload.wa_access_token = this.editForm.wa_access_token
+          if (this.editForm.wa_app_secret)   payload.wa_app_secret   = this.editForm.wa_app_secret
+          if (this.editForm.wa_verify_token) payload.wa_verify_token = this.editForm.wa_verify_token
+
+          try {
+            const r = await fetch(`/admin/tenants/${t.slug}`, {
+              method: 'PATCH',
+              headers: { ...this._h(), 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload),
+            })
+            const data = await r.json()
+            if (r.ok) {
+              // Update row in place
+              Object.assign(t, {
+                plan: data.plan ?? this.editForm.plan,
+                expertise_area: data.expertise_area ?? this.editForm.expertise_area,
+                contact_url: data.contact_url ?? this.editForm.contact_url,
+                active: data.active ?? this.editForm.active,
+              })
+              // Webhook registered=false → show inline warning after collapse
+              const webhookOk = data.webhook_registered !== false
+              this.editLoading = false
+              this.expandedId = null
+              this._resetEditState()
+              if (!webhookOk) {
+                this.editWebhookWarn = true
+                // attach warning to the specific row by storing it on tenant
+                t._webhookWarn = true
+              }
+              this.flashRowId = t.id
+              setTimeout(() => { this.flashRowId = null; t._webhookWarn = false }, 2000)
+            } else {
+              this.editError = data.detail || `Error ${r.status}`
+            }
+          } catch (e) {
+            this.editError = 'Network error: ' + e.message
+          }
+          this.editLoading = false
+        },
+
+        // ── T7: Webhook status ──
+
+        async checkWebhook(slug, evt) {
+          evt?.stopPropagation()
+          if (this.webhookChecking[slug]) return
+          this.webhookChecking = { ...this.webhookChecking, [slug]: true }
+          this.webhookStatus  = { ...this.webhookStatus,  [slug]: 'checking' }
+          try {
+            const r = await fetch(`/admin/tenants/${slug}/webhook-status`, { headers: this._h() })
+            const data = await r.json()
+            this.webhookStatus = { ...this.webhookStatus, [slug]: data.status || 'error' }
+          } catch {
+            this.webhookStatus = { ...this.webhookStatus, [slug]: 'error' }
+          }
+          this.webhookChecking = { ...this.webhookChecking, [slug]: false }
+        },
+
+        webhookLabel(slug) {
+          return {
+            registered: 'Registered',
+            mismatch:   'Mismatch',
+            unknown:    'Unknown',
+            checking:   'Checking…',
+            error:      'Error',
+          }[this.webhookStatus[slug] || 'unknown'] || 'Unknown'
+        },
+
+        // ── T6: Regen API key ──
+
+        startRegen() { this.regenStep = 'confirm' },
+        cancelRegen() { this.regenStep = 'initial'; this.regenError = '' },
+
+        async doRegen(t) {
+          this.regenStep = 'loading'
+          try {
+            const r = await fetch(`/admin/tenants/${t.slug}/regen-key`, {
+              method: 'POST',
+              headers: this._h(),
+            })
+            const data = await r.json()
+            if (r.ok) {
+              this.regenNewKey = data.api_key || ''
+              this.regenStep = 'success'
+            } else {
+              this.regenError = data.detail || `Error ${r.status}`
+              this.regenStep = 'error'
+            }
+          } catch (e) {
+            this.regenError = 'Network error: ' + e.message
+            this.regenStep = 'error'
+          }
+        },
+
+        dismissRegen() { this.regenStep = 'initial'; this.regenNewKey = '' },
+
+        copyToClipboard(text) {
+          navigator.clipboard?.writeText(text).catch(() => {})
+        },
+
+        // ── T4: Delete tenant ──
+
+        startDelete() {
+          this.deleteStep = 'confirm'
+          this.deleteInput = ''
+          this.deleteError = ''
+        },
+
+        cancelDelete() { this.deleteStep = 'initial' },
+
+        async doDelete(t) {
+          if (this.deleteInput !== t.slug) {
+            this.deleteError = 'Slug does not match. Type the tenant slug exactly.'
+            return
+          }
+          this.deleteStep = 'loading'
+          this.deleteError = ''
+          try {
+            const r = await fetch(`/admin/tenants/${t.slug}`, {
+              method: 'DELETE',
+              headers: { ...this._h(), 'Content-Type': 'application/json' },
+              body: JSON.stringify({ confirm_slug: t.slug }),
+            })
+            if (r.ok) {
+              this.expandedId = null
+              this._resetEditState()
+              this.tenants = this.tenants.filter(x => x.id !== t.id)
+              delete this.webhookStatus[t.slug]
+            } else {
+              const data = await r.json()
+              this.deleteError = data.detail || `Error ${r.status}`
+              this.deleteStep = 'error'
+            }
+          } catch (e) {
+            this.deleteError = 'Network error: ' + e.message
+            this.deleteStep = 'error'
+          }
+        },
+
+        // ── Upload ──
 
         dropFile(e) {
           this.up.dragging = false
@@ -501,6 +1102,8 @@
           }
           setTimeout(tick, 800)
         },
+
+        // ── Jobs ──
 
         async fetchJobs() {
           this.jobsLoading = true

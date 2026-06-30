@@ -2,16 +2,20 @@ import asyncio
 import hashlib
 import secrets
 import uuid
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import select, text
+from sqlalchemy.exc import IntegrityError
 
 from app.auth import verify_operator_key
+from app.channels.telegram import delete_webhook, get_webhook_info, set_webhook
+from app.config import settings
 from app.db import AsyncSessionLocal
-from app.models import IndexJob, IndexJobStatus
+from app.models import IndexJob, IndexJobStatus, Tenant
 from app.policies import TenantPolicy
 from app.services.indexer import run_index_job
 
@@ -87,6 +91,193 @@ async def create_tenant(body: TenantCreate, _: None = Depends(verify_operator_ke
     return {"slug": body.slug, "api_key": raw_api_key}
 
 
+class TenantPatch(BaseModel):
+    plan: Literal["free", "basic", "pro"] | None = None
+    expertise_area: str | None = None
+    contact_url: str | None = None
+    active: bool | None = None
+    # Credential fields — only updated when non-empty string is provided
+    bot_token: str | None = None
+    webhook_secret: str | None = None
+    wa_phone_number_id: str | None = None
+    wa_access_token: str | None = None
+    wa_app_secret: str | None = None
+    wa_verify_token: str | None = None
+
+
+@router.patch("/tenants/{slug}")
+async def patch_tenant(slug: str, body: TenantPatch, _: None = Depends(verify_operator_key)):
+    async with AsyncSessionLocal() as db:
+        t = (await db.execute(select(Tenant).where(Tenant.slug == slug))).scalar_one_or_none()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        fields = body.model_fields_set
+        # Capture pre-patch state needed for webhook decisions
+        was_active = t.active
+        old_token = t.bot_token
+
+        if "plan" in fields:
+            t.plan = body.plan
+        if "expertise_area" in fields:
+            t.expertise_area = body.expertise_area
+        if "contact_url" in fields:
+            t.contact_url = body.contact_url
+        if "active" in fields:
+            t.active = body.active
+        if "webhook_secret" in fields and body.webhook_secret:
+            t.webhook_secret = body.webhook_secret
+        if "wa_phone_number_id" in fields:
+            t.wa_phone_number_id = body.wa_phone_number_id or None
+        if "wa_access_token" in fields and body.wa_access_token:
+            t.wa_access_token = body.wa_access_token
+        if "wa_app_secret" in fields and body.wa_app_secret:
+            t.wa_app_secret = body.wa_app_secret
+        if "wa_verify_token" in fields:
+            t.wa_verify_token = body.wa_verify_token or None
+
+        token_changed = "bot_token" in fields and bool(body.bot_token)
+        if token_changed:
+            conflict = (await db.execute(
+                select(Tenant.id).where(Tenant.bot_token == body.bot_token, Tenant.id != t.id)
+            )).scalar_one_or_none()
+            if conflict:
+                raise HTTPException(status_code=409, detail="bot_token already in use by another tenant")
+            t.bot_token = body.bot_token
+
+        secret_changed = "webhook_secret" in fields and bool(body.webhook_secret)
+
+        try:
+            await db.commit()
+            await db.refresh(t)
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(status_code=409, detail="Conflict updating tenant — check bot_token uniqueness")
+
+    # ── Webhook registration (outside the DB session) ──────────────────────────
+    # Clean up old token's registration whenever it's being replaced.
+    needs_deregister = (not t.active and was_active) or (t.active and token_changed)
+    needs_register = t.active and (token_changed or secret_changed or not was_active)
+
+    webhook_registered = None
+    if needs_deregister:
+        await delete_webhook(old_token)
+    if needs_register:
+        webhook_url = f"https://{settings.app_domain}/webhook/telegram/{t.slug}"
+        webhook_registered = await set_webhook(t.bot_token, webhook_url, t.webhook_secret)
+
+    # Never return credential fields in the response
+    return {
+        "slug": t.slug,
+        "plan": t.plan,
+        "expertise_area": t.expertise_area,
+        "contact_url": t.contact_url,
+        "active": t.active,
+        "webhook_registered": webhook_registered,
+    }
+
+
+class TenantDelete(BaseModel):
+    confirm_slug: str
+
+
+@router.delete("/tenants/{slug}")
+async def delete_tenant(slug: str, body: TenantDelete, _: None = Depends(verify_operator_key)):
+    if body.confirm_slug != slug:
+        raise HTTPException(status_code=400, detail="confirm_slug does not match tenant slug")
+
+    async with AsyncSessionLocal() as db:
+        t = (await db.execute(select(Tenant).where(Tenant.slug == slug))).scalar_one_or_none()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        running = (await db.scalar(
+            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status IN ('PENDING', 'RUNNING')"),
+            {"tid": t.id},
+        )) or 0
+        if running:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{running} index job(s) still in progress — wait for them to finish before deleting",
+            )
+
+        bot_token = t.bot_token
+        thread_prefix = f"tenant:{slug}:%"
+
+        # LangGraph checkpoint tables have no FK to tenants — clean them manually.
+        # These tables may not exist in fresh environments; errors are suppressed.
+        for lg_table in ("checkpoint_writes", "checkpoint_blobs", "checkpoints"):
+            try:
+                await db.execute(
+                    text(f"DELETE FROM {lg_table} WHERE thread_id LIKE :prefix"),  # noqa: S608
+                    {"prefix": thread_prefix},
+                )
+            except Exception:
+                pass
+
+        try:
+            await db.delete(t)
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Cannot delete: tenant has dependent rows. Run: alembic upgrade 0002",
+            )
+
+    # Best-effort webhook cleanup outside the DB session
+    await delete_webhook(bot_token)
+
+    return {"slug": slug, "deleted": True}
+
+
+# ── Webhook status ───────────────────────────────────────────────────────────
+
+@router.get("/tenants/{slug}/webhook-status")
+async def webhook_status(slug: str, _: None = Depends(verify_operator_key)):
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            text("SELECT bot_token FROM tenants WHERE slug = :slug"),
+            {"slug": slug},
+        )).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    info = await get_webhook_info(row.bot_token)
+    if not info["ok"]:
+        return {"status": "error", "detail": info.get("error")}
+
+    registered_url = info["result"].get("url", "")
+    expected_url = f"https://{settings.app_domain}/webhook/telegram/{slug}"
+
+    if not registered_url:
+        status = "unknown"
+    elif registered_url == expected_url:
+        status = "registered"
+    else:
+        # Webhook exists but points to a different URL — config drift or domain change
+        status = "mismatch"
+
+    return {"status": status, "url": registered_url}
+
+
+# ── API key rotation ─────────────────────────────────────────────────────────
+
+@router.post("/tenants/{slug}/regen-key")
+async def regen_api_key(slug: str, _: None = Depends(verify_operator_key)):
+    async with AsyncSessionLocal() as db:
+        t = (await db.execute(select(Tenant).where(Tenant.slug == slug))).scalar_one_or_none()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        raw_key = secrets.token_hex(32)
+        t.api_key_hash = hashlib.sha256(raw_key.encode()).hexdigest()
+        await db.commit()
+
+    # Return the raw key exactly once — it is never stored and cannot be recovered.
+    return {"api_key": raw_key}
+
+
 # ── Index jobs ────────────────────────────────────────────────────────────────
 
 @router.post("/index")
@@ -110,7 +301,7 @@ async def create_index_job(
         policy = TenantPolicy(tenant_slug=tenant_slug, plan=plan)
         # Count completed index jobs (= uploaded documents)
         doc_count = (await db.scalar(
-            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'COMPLETED'"),
+            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'DONE'"),
             {"tid": tenant_id},
         )) or 0
 
@@ -196,7 +387,7 @@ async def get_tenant_billing(tenant_slug: str, _: None = Depends(verify_operator
 
         # Count current usage (completed documents and total chunks)
         doc_count = (await db.scalar(
-            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'COMPLETED'"),
+            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'DONE'"),
             {"tid": tenant_id},
         )) or 0
         chunk_count = (await db.scalar(
