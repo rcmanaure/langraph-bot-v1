@@ -10,11 +10,18 @@ All notable changes to this project will be documented in this file.
 - **Telegram webhook**: if the graph is not available at message processing time, the bot now sends a user-facing "service unavailable" message instead of silently dropping the request
 - **Triage node**: LLM responses wrapped in markdown code fences (`` ```json `` or `` ``` ``) are now correctly stripped before JSON parsing, preventing fallback routing failures when the model includes formatting in its response
 - **Triage node**: fence stripping now uses regex instead of string split, handles uppercase language tags (`` ```JSON ``), and returns the Pydantic-validated decision value rather than the raw LLM string
+- **WhatsApp webhook**: HMAC signature verification now rejects requests where the `x-hub-signature-256` header is absent when `app_secret` is configured (previously a missing header bypassed the check entirely)
+- **WhatsApp webhook**: verify-token endpoint now uses `hmac.compare_digest` instead of `!=` to prevent timing oracles
+- **WhatsApp webhook**: malformed JSON payloads from Meta now return `{"ok": true}` instead of HTTP 500 (which would have triggered infinite Meta retries)
+- **WhatsApp webhook**: `msg['from']` hard key access replaced with `.get()` + early return to prevent unhandled `KeyError` for system events in background tasks
+- **WhatsApp webhook**: graph unavailability now handled with an explicit null check and user-facing message, matching the Telegram channel behavior
+- **Telegram webhook**: empty STT transcription result now returns early before graph invocation, matching the WhatsApp channel guard
+- **WhatsApp decrypt**: fallback to raw value on decrypt failure now logs an error (previously silent, making key rotation breakage invisible)
 
 ### Changed
 
-- `docker-compose.yml`: updated service configuration
-- `Dockerfile`: minor build layer adjustment
+- `docker-compose.yml`: Docker network renamed from `app` to `lgbot-net` — run `docker network create lgbot-net` (one-time) when updating an existing deployment
+- `Dockerfile`: `chmod +x /app/entrypoint.sh` added to the build so the container image always ships an executable entrypoint regardless of the host filesystem mode
 
 ### Added
 

@@ -72,7 +72,7 @@ cp .env.example .env
 
 ```bash
 # Create the shared Docker network (one-time)
-docker network create app
+docker network create lgbot-net
 
 docker compose up -d
 ```
@@ -233,9 +233,10 @@ uv run pytest -m "not eval" --tb=short -q
 | File | What it covers |
 |---|---|
 | `test_telegram_webhook.py` | Webhook handler edge cases (auth, routing, voice, graph errors) — no live services |
+| `test_whatsapp_dedup.py` | WhatsApp dedup cache — LRU eviction, duplicate message detection |
 | `test_admin_api.py` | Admin API edge cases (auth, tenant CRUD, indexing jobs) — no live services |
 | `test_graph.py` | LangGraph routing logic |
-| `test_nodes.py` | Individual node behavior |
+| `test_nodes.py` | Individual node behavior (triage fallback paths, fence stripping) |
 | `test_indexing.py` | Document chunking + embedding pipeline |
 | `test_security.py` | Injection scanner, rate limiting |
 | `test_scheduler.py` | APScheduler interrupt expiry |
@@ -254,7 +255,7 @@ echo "TRAEFIK_HOST=bot.yourdomain.com" >> .env
 docker compose up -d
 ```
 
-Traefik must be running on the `app` Docker network with a `letsencrypt` certificate resolver configured. Register the Telegram webhook pointing to `https://bot.yourdomain.com/webhook/telegram/<slug>`.
+Traefik must be running on the `lgbot-net` Docker network with a `letsencrypt` certificate resolver configured. Register the Telegram webhook pointing to `https://bot.yourdomain.com/webhook/telegram/<slug>`.
 
 ---
 
@@ -282,5 +283,9 @@ docs/
 ├── adr/             # Architecture Decision Records (ADR-001 … ADR-004)
 └── agent-dna.md     # AgentState field-by-field contract and versioning rules
 tests/               # pytest test suite
+CHANGELOG.md         # Release history
+DESIGN.md            # Admin panel design system (colors, typography, components)
+TODOS.md             # Accepted deferred work items
+VERSION              # Current version (semver: major.minor.patch.build)
 start-tunnel.ps1     # Windows: starts cloudflared tunnel + registers Telegram webhook
 ```
