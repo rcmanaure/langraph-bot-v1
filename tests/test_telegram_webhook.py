@@ -435,3 +435,14 @@ async def test_graph_not_initialized_sends_service_unavailable(mock_db, mock_htt
     send_calls = mock_http.post.call_args_list
     error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
     assert error_call is not None, "Expected a user-facing error message when graph not initialized"
+    assert "Lo siento" in str(error_call) or "no está disponible" in str(error_call)
+
+
+@pytest.mark.asyncio
+async def test_duplicate_update_id_not_processed_twice(mock_db, mock_http, mock_graph):
+    """Same update_id sent twice → graph invoked exactly once (dedup)."""
+    app = make_app(mock_graph)
+    payload = {"update_id": 9999, **text_update()}
+    await _post(app, payload)
+    await _post(app, payload)
+    mock_graph.ainvoke.assert_awaited_once()

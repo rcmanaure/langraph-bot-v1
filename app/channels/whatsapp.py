@@ -117,7 +117,7 @@ async def whatsapp_verify(
             {"s": tenant_slug},
         )).first()
 
-    if not row or hub_mode != "subscribe" or hub_verify_token != row.wa_verify_token:
+    if not row or hub_mode != "subscribe" or not hmac.compare_digest(hub_verify_token or "", row.wa_verify_token or ""):
         return PlainTextResponse("Forbidden", status_code=403)
     return PlainTextResponse(hub_challenge or "")
 
@@ -149,19 +149,27 @@ async def whatsapp_webhook(
     try:
         access_token = decrypt_value(row._wa_access_token) if row._wa_access_token else None
         app_secret = decrypt_value(row._wa_app_secret) if row._wa_app_secret else None
-    except Exception:
+    except Exception as exc:
+        logger.error("wa_decrypt_failed tenant=%s err=%s", tenant_slug, exc)
         access_token = row._wa_access_token
         app_secret = row._wa_app_secret
 
-    # HMAC verification
-    if app_secret and x_hub_signature_256:
+    # HMAC verification — when app_secret is configured, a missing header is rejected
+    if app_secret:
+        if not x_hub_signature_256:
+            logger.warning("wa_missing_hmac tenant=%s", tenant_slug)
+            return {"ok": True}
         sig = x_hub_signature_256.removeprefix("sha256=")
         mac = hmac.new(app_secret.encode(), body_bytes, hashlib.sha256)
         if not hmac.compare_digest(sig, mac.hexdigest()):
             logger.warning("wa_bad_hmac tenant=%s", tenant_slug)
             return {"ok": True}
 
-    payload = json.loads(body_bytes)
+    try:
+        payload = json.loads(body_bytes)
+    except json.JSONDecodeError:
+        logger.warning("wa_invalid_json tenant=%s", tenant_slug)
+        return {"ok": True}
     if payload.get("object") != "whatsapp_business_account":
         return {"ok": True}
 
@@ -193,7 +201,10 @@ async def _handle_message(
     access_token: str | None,
     msg: dict,
 ) -> None:
-    from_id = msg["from"]
+    from_id = msg.get("from")
+    if not from_id:
+        logger.warning("wa_missing_from tenant=%s", tenant_slug)
+        return
     msg_type = msg.get("type", "")
 
     # Update WhatsApp 24h service window
@@ -231,8 +242,14 @@ async def _handle_message(
         return
 
     thread_id = f"tenant:{tenant_slug}:user:{from_id}:channel:whatsapp"
+    graph = getattr(request.app.state, "graph", None)
+    if graph is None:
+        logger.error("wa_graph_not_initialized thread=%s", thread_id)
+        if access_token and phone_number_id:
+            await _send(phone_number_id, access_token, from_id, "Lo siento, el servicio no está disponible. Por favor intenta de nuevo más tarde.")
+        return
     try:
-        result = await request.app.state.graph.ainvoke(
+        result = await graph.ainvoke(
             {"tenant_id": tenant_slug, "thread_id": thread_id,
              "messages": [HumanMessage(content=text_content)], "answer": ""},
             config={"configurable": {"thread_id": thread_id}},

@@ -155,6 +155,8 @@ async def _process_update(
         except Exception as exc:
             logger.warning("tg_stt_failed user=%s err=%s", user_id, exc)
             return
+        if not text_content:
+            return
         event = ChannelEvent(
             tenant_slug=tenant_slug, channel="telegram",
             user_id=user_id, chat_id=str(chat_id),

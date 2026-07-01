@@ -196,6 +196,23 @@ async def test_triage_fallback_unknown_decision_returns_rag(base_state):
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
+async def test_triage_fallback_valid_json_missing_decision_key(base_state):
+    """Fallback path: valid JSON but no 'decision' key → KeyError → rag."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = '{"intent": "rag"}'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "rag"}
+
+
+@pytest.mark.asyncio
 async def test_validate_output_passes_good_answer(base_state):
     base_state["answer"] = "El precio del plan básico es $50 al mes."
     result = await validate_output(base_state)
