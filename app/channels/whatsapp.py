@@ -136,7 +136,9 @@ async def whatsapp_webhook(
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
             text("""
-                SELECT wa_phone_number_id, _wa_access_token, _wa_app_secret
+                SELECT wa_phone_number_id,
+                       wa_access_token AS _wa_access_token,
+                       wa_app_secret   AS _wa_app_secret
                   FROM tenants WHERE slug = :s AND active = true
             """),
             {"s": tenant_slug},
