@@ -89,6 +89,108 @@ async def test_triage_no_human_message_defaults_rag(base_state):
     assert result == {"triage_decision": "rag"}
 
 
+@pytest.mark.asyncio
+async def test_triage_fallback_clean_json(base_state):
+    """Fallback path: structured output fails, raw LLM returns clean JSON."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = '{"decision": "rag"}'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "rag"}
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_strips_markdown_fences_no_tag(base_state):
+    """Fallback path: LLM wraps JSON in ``` fences without json tag."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = '```\n{"decision": "catalog"}\n```'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "catalog"}
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_strips_markdown_fences_json_tag(base_state):
+    """Fallback path: LLM wraps JSON in ```json fences (core of the change)."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = '```json\n{"decision": "human"}\n```'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "human"}
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_strips_markdown_fences_uppercase_tag(base_state):
+    """Fallback path: LLM wraps JSON in ```JSON (uppercase) fences — should strip correctly."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = '```JSON\n{"decision": "rag"}\n```'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "rag"}
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_invalid_json_returns_rag(base_state):
+    """Fallback path: LLM returns unparseable content → defaults to rag."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = "sorry, I cannot determine the intent"
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "rag"}
+
+
+@pytest.mark.asyncio
+async def test_triage_fallback_unknown_decision_returns_rag(base_state):
+    """Fallback path: LLM returns valid JSON but unknown enum value → rag."""
+    mock_llm = MagicMock()
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("structured failed"))
+    mock_llm.with_structured_output.return_value = mock_structured
+    raw_response = MagicMock()
+    raw_response.content = '{"decision": "unknown_value"}'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_response)
+
+    with patch("app.graph.nodes.triage.get_chat_llm", return_value=mock_llm):
+        result = await triage(base_state)
+
+    assert result == {"triage_decision": "rag"}
+
+
 # ---------------------------------------------------------------------------
 # validate_output node
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 
 from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
 from pydantic import ValidationError
@@ -51,12 +52,15 @@ async def triage(state: AgentState) -> dict:
     except (ValidationError, Exception) as exc:
         logger.warning("triage_structured_failed=%s falling back to json parse", exc)
 
-    # Fallback: raw LLM + JSON parse
+    # Fallback: raw LLM + JSON parse (strip markdown fences if present)
     try:
         resp = await llm.ainvoke(payload)
-        decision = json.loads(resp.content.strip())["decision"]
-        TriageDecision(decision=decision)  # validate enum
-        return {"triage_decision": decision}
+        content = resp.content.strip()
+        content = re.sub(r"^```[a-zA-Z]*\s*", "", content)
+        content = re.sub(r"\s*```$", "", content).strip()
+        decision = json.loads(content)["decision"]
+        td = TriageDecision(decision=decision)  # validate enum
+        return {"triage_decision": td.decision}
     except Exception:
         logger.warning("triage_json_fallback_failed defaulting to rag")
         return {"triage_decision": "rag"}
