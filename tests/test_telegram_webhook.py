@@ -410,3 +410,28 @@ async def test_final_send_failure_still_returns_ok(mock_db, mock_graph):
         r = await _post(app, text_update())
     assert r.status_code == 200
     assert r.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_voice_over_10mb_no_graph_in_app_state(mock_db, mock_http):
+    """Voice > 10 MB returns early before graph access — app.state.graph not required."""
+    app = make_app()  # no graph set — proves lazy access path works
+    payload = voice_update(file_size=11 * 1024 * 1024)
+    r = await _post(app, payload)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    send_calls = mock_http.post.call_args_list
+    error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert error_call is not None and "10MB" in str(error_call)
+
+
+@pytest.mark.asyncio
+async def test_graph_not_initialized_sends_service_unavailable(mock_db, mock_http):
+    """Normal text message with no graph set → user-facing error, no AttributeError crash."""
+    app = make_app()  # no graph set
+    r = await _post(app, text_update())
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+    send_calls = mock_http.post.call_args_list
+    error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert error_call is not None, "Expected a user-facing error message when graph not initialized"

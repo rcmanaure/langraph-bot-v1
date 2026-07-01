@@ -132,7 +132,7 @@ async def _process_update(
     bot_token: str,
     webhook_secret: str,
     body: dict,
-    graph,
+    app_state,
 ) -> None:
     """Heavy processing: runs AFTER 200 is returned to Telegram."""
     msg = body.get("message") or body.get("edited_message")
@@ -165,6 +165,15 @@ async def _process_update(
         event = await adapter.normalize(body)
         if not event:
             return
+
+    graph = getattr(app_state, "graph", None)
+    if graph is None:
+        logger.error("tg_graph_not_initialized thread=%s", event.thread_id)
+        try:
+            await adapter.send(event, "Lo siento, el servicio no está disponible. Por favor intenta de nuevo más tarde.")
+        except Exception:
+            pass
+        return
 
     try:
         async with httpx.AsyncClient(timeout=5) as c:
@@ -231,6 +240,6 @@ async def telegram_webhook(
         row.bot_token,
         row.webhook_secret,
         body,
-        request.app.state.graph,
+        request.app.state,
     )
     return {"ok": True}
