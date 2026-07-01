@@ -9,7 +9,7 @@ All notable changes to this project will be documented in this file.
 - **Telegram webhook**: graph object is now resolved lazily inside the background task instead of at scheduling time, preventing `AttributeError` crashes when the app starts before the graph is fully initialized
 - **Telegram webhook**: if the graph is not available at message processing time, the bot now sends a user-facing "service unavailable" message instead of silently dropping the request
 - **Triage node**: LLM responses wrapped in markdown code fences (`` ```json `` or `` ``` ``) are now correctly stripped before JSON parsing, preventing fallback routing failures when the model includes formatting in its response
-- **Triage node**: fence stripping now uses regex instead of string split, handles uppercase language tags (`` ```JSON ``), and returns the Pydantic-validated decision value rather than the raw LLM string
+- **Triage node**: fence stripping handles all markdown code fence variants — bare `` ``` ``, `` ```json ``, and `` ```JSON `` — and returns the Pydantic-validated decision value rather than the raw LLM string
 - **WhatsApp webhook**: HMAC signature verification now rejects requests where the `x-hub-signature-256` header is absent when `app_secret` is configured (previously a missing header bypassed the check entirely)
 - **WhatsApp webhook**: verify-token endpoint now uses `hmac.compare_digest` instead of `!=` to prevent timing oracles
 - **WhatsApp webhook**: malformed JSON payloads from Meta now return `{"ok": true}` instead of HTTP 500 (which would have triggered infinite Meta retries)

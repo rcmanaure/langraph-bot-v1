@@ -164,7 +164,6 @@ row-out: 200ms — delete row collapse
 ```
 Tailwind CSS:  CDN (https://cdn.tailwindcss.com) — utility classes
 Alpine.js:     v3.14.1 CDN — reactive SPA directives
-Pretext:       @chenglou/pretext — text layout (vendor/pretext.js inlined)
 ```
 
 ## Conventions
