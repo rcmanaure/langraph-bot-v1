@@ -12,6 +12,29 @@ Items accepted for future work but out of current PR scope.
 **Depends on:** Nothing.
 
 
+## Multi-Vertical Platform Debt
+
+### E2 — Query analytics for operators
+**What:** Track every query per tenant: `query_logs(tenant_id, user_id, query, timestamp, decision)`. Admin panel widget: top queries this week, queries/day chart.
+**Why:** Operators can't optimize what they can't see. Knowing "50% of queries ask about X" tells the tenant what to add to their catalog.
+**How:** New table `query_logs` + endpoint `GET /admin/tenants/{slug}/stats` + admin panel widget. Fills the TODO at admin.py:475.
+**Effort:** M. DB migration required. Unblocks billing tier enforcement later.
+**Depends on:** Nothing — additive.
+
+### E3 — Prompt tone configurable per tenant
+**What:** New column `tenants.prompt_tone` (formal|casual|friendly) + optional `domain_hint`. `generate.py` loads these at runtime and adjusts `_FORMAT_HINT` and `_RAG_SYSTEM` intro accordingly.
+**Why:** A dental clinic and a law firm shouldn't have the same bot personality. Currently all tenants share one tone (friendly/WhatsApp). Tenant-level control makes onboarding new verticals feel native, not generic.
+**How:** `ALTER TABLE tenants ADD COLUMN prompt_tone VARCHAR(20) DEFAULT 'friendly'`. Admin panel: "Personalizar tono" section. `generate.py` selects format hint variant.
+**Effort:** M. DB migration + admin UI + generate.py changes.
+**Depends on:** Nothing. Works alongside current prompt fix (Approach A).
+
+### E5 — Self-service tenant onboarding
+**What:** Public `/registro` flow: form (name, email, vertical) → tenant created → API key emailed → wizard (upload catalog or choose template → connect WhatsApp/Telegram → done). No operator intervention needed.
+**Why:** Currently adding a tenant requires operator key and manual setup. Self-service is the unlock for scaling from 5 to 50+ tenants without linear ops work.
+**How:** Auth system (email/password or magic link) + registration endpoint + setup wizard UI + email delivery (Resend/SendGrid). Template catalog selection leverages E1 example files.
+**Effort:** L. Requires auth, email, multi-step wizard. Design separately.
+**Depends on:** E1 (template catalogs) recommended first.
+
 ## Product Debt
 
 ### WhatsApp auto-webhook registration

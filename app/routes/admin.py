@@ -280,6 +280,31 @@ async def regen_api_key(slug: str, _: None = Depends(verify_operator_key)):
 
 # ── Index jobs ────────────────────────────────────────────────────────────────
 
+@router.get("/tenants/{slug}/chunks/files")
+async def list_chunk_files(slug: str, _: None = Depends(verify_operator_key)):
+    """List distinct source files indexed for a tenant, with chunk counts."""
+    async with AsyncSessionLocal() as db:
+        tenant_id = await db.scalar(
+            text("SELECT id FROM tenants WHERE slug = :slug"),
+            {"slug": slug},
+        )
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        rows = await db.execute(
+            text("""
+                SELECT SPLIT_PART(source, ':', 1) AS filename,
+                       COUNT(*) AS chunk_count
+                  FROM document_chunks
+                 WHERE tenant_id = :tid
+                 GROUP BY SPLIT_PART(source, ':', 1)
+                 ORDER BY filename
+            """),
+            {"tid": tenant_id},
+        )
+        return [dict(r._mapping) for r in rows.fetchall()]
+
+
 @router.delete("/tenants/{slug}/chunks")
 async def delete_chunks(
     slug: str,

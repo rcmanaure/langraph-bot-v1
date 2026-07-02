@@ -53,7 +53,7 @@ def _chunk_page(text: str, source: str, page: int) -> list[dict]:
     ]
 
 
-def _extract_jsonl_chunks(content: bytes, filename: str) -> list[dict]:
+def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], dict | None]:
     """Parse JSONL catalog format — each line = one pre-structured embedding chunk.
 
     Supported fields per line:
@@ -61,12 +61,16 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> list[dict]:
       name      (str)   — display name
       price     (float) — price in USD
       type      (str)   — "biopsy" | "protocol" | "cytology" | etc.
+                          Special value "org_metadata" skips embedding and instead
+                          returns tenant config (expertise_area, contact_url) as second
+                          element of the returned tuple.
       category  (str)   — catalog section
       keywords  (list)  — trigger terms for retrieval (critical for protocols)
       text      (str)   — pre-built embedding text; overrides auto-construction
       description (str) — additional context injected into embedding text
     """
-    chunks = []
+    chunks: list[dict] = []
+    org_meta: dict | None = None
     for line_num, raw in enumerate(content.decode("utf-8", errors="replace").splitlines(), start=1):
         raw = raw.strip()
         if not raw or raw.startswith("#"):
@@ -77,9 +81,22 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> list[dict]:
             logger.warning("jsonl_skip_invalid_line file=%s line=%d", filename, line_num)
             continue
 
-        # Use pre-built text if provided; otherwise construct from structured fields
+        if item.get("type") == "org_metadata":
+            org_meta = item
+            logger.info("jsonl_org_metadata file=%s", filename)
+            continue
+
+        # Use pre-built text if provided; otherwise construct from structured fields.
+        # Keywords are always appended to the embedding regardless of whether text
+        # is provided — separating text narrative from retrieval keywords is valid
+        # schema design, but the indexer must merge both into the vector.
         if item.get("text"):
             embed_text = str(item["text"])
+            if item.get("price") is not None and "$" not in embed_text:
+                embed_text += f" ${item['price']:.2f}"
+            if item.get("keywords"):
+                kws = item["keywords"] if isinstance(item["keywords"], list) else [item["keywords"]]
+                embed_text += "\nIndicaciones: " + ", ".join(str(k) for k in kws)
         else:
             parts: list[str] = []
             if item.get("id"):
@@ -129,7 +146,7 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> list[dict]:
             "metadata": meta or None,
         })
 
-    return chunks
+    return chunks, org_meta
 
 
 async def run_index_job(
@@ -166,7 +183,24 @@ async def run_index_job(
             logger.info("index_replaced_stale job=%s filename=%s deleted=%d", job_id, filename, replaced)
 
         if filename.lower().endswith(".jsonl"):
-            all_chunks = _extract_jsonl_chunks(content, filename)
+            all_chunks, org_meta = _extract_jsonl_chunks(content, filename)
+            if org_meta:
+                async with AsyncSessionLocal() as db:
+                    await db.execute(
+                        text("""
+                            UPDATE tenants
+                               SET expertise_area = COALESCE(:ea, expertise_area),
+                                   contact_url    = COALESCE(:cu, contact_url)
+                             WHERE id = :tid
+                        """),
+                        {
+                            "ea": str(org_meta["expertise_area"])[:255] if org_meta.get("expertise_area") else None,
+                            "cu": str(org_meta["contact_url"])[:512] if org_meta.get("contact_url") else None,
+                            "tid": tenant_id,
+                        },
+                    )
+                    await db.commit()
+                logger.info("org_metadata_applied job=%s tenant=%d", job_id, tenant_id)
         else:
             pages = _extract_pages(content, filename)
             all_chunks: list[dict] = []
