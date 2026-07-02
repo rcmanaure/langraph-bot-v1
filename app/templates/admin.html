@@ -572,7 +572,7 @@
                   <div>
                     <svg class="w-10 h-10 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
                     <p class="text-sm text-gray-500">Drag here or <span class="text-blue-600 font-medium">click to select</span></p>
-                    <p class="text-xs text-gray-400 mt-1">PDF or Markdown (.pdf, .md)</p>
+                    <p class="text-xs text-gray-400 mt-1">PDF, Markdown or JSONL catalog (.pdf, .md, .jsonl)</p>
                   </div>
                 </template>
                 <template x-if="up.file">
@@ -584,9 +584,15 @@
                     </button>
                   </div>
                 </template>
-                <input x-ref="fileInput" type="file" accept=".pdf,.md" class="hidden" @change="up.file=$event.target.files[0]">
+                <input x-ref="fileInput" type="file" accept=".pdf,.md,.jsonl" class="hidden" @change="up.file=$event.target.files[0]">
               </div>
             </div>
+
+            <!-- Auto-replace hint -->
+            <p class="text-xs text-gray-400 flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 flex-shrink-0 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Re-uploading a file with the same name replaces its previous embeddings automatically.
+            </p>
 
             <!-- Progress -->
             <div x-show="up.jobId" class="rounded-xl border border-gray-200 bg-gray-50 p-4">
@@ -625,6 +631,75 @@
               </span>
             </button>
           </form>
+        </div>
+
+        <!-- Indexed files -->
+        <div class="mt-6 max-w-xl">
+          <div class="flex items-center justify-between mb-3">
+            <h3 class="text-sm font-semibold text-gray-900">Indexed files</h3>
+            <div class="flex items-center gap-2">
+              <select x-model="chunksTenant" @change="fetchChunkFiles()" class="field text-sm w-auto">
+                <option value="">Select tenant…</option>
+                <template x-for="t in tenants" :key="t.slug">
+                  <option :value="t.slug" x-text="t.slug"></option>
+                </template>
+              </select>
+              <button @click="fetchChunkFiles()" :disabled="!chunksTenant" class="p-1.5 rounded-lg hover:bg-gray-100 text-gray-500 transition-colors disabled:opacity-40" title="Refresh">
+                <svg :class="{'animate-spin': chunksLoading}" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>
+              </button>
+            </div>
+          </div>
+
+          <div class="bg-white rounded-xl border border-gray-200 overflow-hidden">
+            <div x-show="!chunksTenant" class="flex flex-col items-center justify-center py-10 text-gray-400 text-sm">
+              Select a tenant to see its indexed files
+            </div>
+            <div x-show="chunksTenant && chunksLoading" class="flex items-center justify-center py-10 text-gray-400 text-sm gap-2">
+              <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+              Loading…
+            </div>
+            <div x-show="chunksTenant && !chunksLoading && chunkFiles.length === 0" class="flex flex-col items-center justify-center py-10 text-gray-400 text-sm">
+              No indexed files for this tenant
+            </div>
+            <div x-show="chunksTenant && !chunksLoading && chunkFiles.length > 0">
+              <div x-show="chunksMsg" role="alert" class="px-4 py-2 text-xs" :class="chunksMsg.startsWith('Deleted') ? 'text-green-700 bg-green-50' : 'text-red-700 bg-red-50'" x-text="chunksMsg"></div>
+              <table class="w-full text-sm">
+                <thead class="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th class="text-left px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">File</th>
+                    <th class="text-right px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wider">Chunks</th>
+                    <th class="px-4 py-2 w-10" aria-hidden="true"></th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-100">
+                  <template x-for="f in chunkFiles" :key="f.filename">
+                    <tr class="hover:bg-gray-50 transition-colors">
+                      <td class="px-4 py-2.5">
+                        <span class="font-mono text-xs text-gray-800" x-text="f.filename"></span>
+                      </td>
+                      <td class="px-4 py-2.5 text-right">
+                        <span class="text-xs text-gray-500" x-text="f.chunk_count"></span>
+                      </td>
+                      <td class="px-4 py-2.5 text-right">
+                        <template x-if="chunksDeleting !== f.filename">
+                          <button
+                            @click="deleteChunkFile(f.filename)"
+                            class="p-1.5 rounded text-gray-400 hover:text-red-600 hover:bg-red-50 transition-colors"
+                            :title="'Delete chunks from ' + f.filename"
+                          >
+                            <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+                          </button>
+                        </template>
+                        <template x-if="chunksDeleting === f.filename">
+                          <svg class="w-3.5 h-3.5 animate-spin text-red-500 mx-auto" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path></svg>
+                        </template>
+                      </td>
+                    </tr>
+                  </template>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -748,6 +823,13 @@
 
         // ── Upload ──
         up: { tenant:'', file:null, dragging:false, loading:false, uploadErr:'', jobId:null, status:'', pct:0, total:0, done:0, err:'' },
+
+        // ── Chunk files ──
+        chunksTenant: '',
+        chunkFiles: [],
+        chunksLoading: false,
+        chunksDeleting: null,
+        chunksMsg: '',
 
         // ── Jobs ──
         jobs: [],
@@ -1101,6 +1183,44 @@
             } catch {}
           }
           setTimeout(tick, 800)
+        },
+
+        // ── Chunk files ──
+
+        async fetchChunkFiles() {
+          if (!this.chunksTenant) return
+          this.chunksLoading = true
+          this.chunksMsg = ''
+          try {
+            const r = await fetch(`/admin/tenants/${this.chunksTenant}/chunks/files`, { headers: this._h() })
+            if (r.ok) {
+              this.chunkFiles = await r.json()
+            } else {
+              this.chunkFiles = []
+            }
+          } catch { this.chunkFiles = [] }
+          this.chunksLoading = false
+        },
+
+        async deleteChunkFile(filename) {
+          this.chunksDeleting = filename
+          this.chunksMsg = ''
+          try {
+            const r = await fetch(
+              `/admin/tenants/${this.chunksTenant}/chunks?source=${encodeURIComponent(filename)}`,
+              { method: 'DELETE', headers: this._h() }
+            )
+            const data = await r.json()
+            if (r.ok) {
+              this.chunksMsg = `Deleted ${data.deleted} chunks from "${filename}"`
+              this.chunkFiles = this.chunkFiles.filter(f => f.filename !== filename)
+            } else {
+              this.chunksMsg = data.detail || `Error ${r.status}`
+            }
+          } catch (e) {
+            this.chunksMsg = 'Network error: ' + e.message
+          }
+          this.chunksDeleting = null
         },
 
         // ── Jobs ──

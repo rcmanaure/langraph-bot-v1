@@ -280,6 +280,73 @@ async def regen_api_key(slug: str, _: None = Depends(verify_operator_key)):
 
 # ── Index jobs ────────────────────────────────────────────────────────────────
 
+@router.get("/tenants/{slug}/chunks/files")
+async def list_chunk_files(slug: str, _: None = Depends(verify_operator_key)):
+    """List distinct source files indexed for a tenant, with chunk counts."""
+    async with AsyncSessionLocal() as db:
+        tenant_id = await db.scalar(
+            text("SELECT id FROM tenants WHERE slug = :slug"),
+            {"slug": slug},
+        )
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        rows = await db.execute(
+            text("""
+                SELECT SPLIT_PART(source, ':', 1) AS filename,
+                       COUNT(*) AS chunk_count
+                  FROM document_chunks
+                 WHERE tenant_id = :tid
+                 GROUP BY SPLIT_PART(source, ':', 1)
+                 ORDER BY filename
+            """),
+            {"tid": tenant_id},
+        )
+        return [dict(r._mapping) for r in rows.fetchall()]
+
+
+@router.delete("/tenants/{slug}/chunks")
+async def delete_chunks(
+    slug: str,
+    source: str | None = None,
+    _: None = Depends(verify_operator_key),
+):
+    """Delete document chunks for a tenant.
+
+    - Without ?source: deletes ALL chunks (full namespace wipe).
+    - With ?source=filename.md: deletes only chunks from that file.
+
+    Use before re-uploading a document to avoid duplicate chunks.
+    """
+    async with AsyncSessionLocal() as db:
+        tenant_id = (await db.scalar(
+            text("SELECT id FROM tenants WHERE slug = :slug"),
+            {"slug": slug},
+        ))
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        if source:
+            # For JSONL files delete by source prefix (filename:id pattern)
+            result = await db.execute(
+                text("""
+                    DELETE FROM document_chunks
+                     WHERE tenant_id = :tid
+                       AND (source = :src OR source LIKE :prefix)
+                """),
+                {"tid": tenant_id, "src": source, "prefix": f"{source}:%"},
+            )
+        else:
+            result = await db.execute(
+                text("DELETE FROM document_chunks WHERE tenant_id = :tid"),
+                {"tid": tenant_id},
+            )
+        deleted = result.rowcount
+        await db.commit()
+
+    return {"deleted": deleted, "source": source or "*"}
+
+
 @router.post("/index")
 async def create_index_job(
     tenant_slug: str = Form(...),

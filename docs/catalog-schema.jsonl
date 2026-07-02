@@ -1,0 +1,18 @@
+# Formato JSONL para catálogos de precios — langraph-bot-v1
+# Cada línea = un ítem = un embedding independiente.
+# Campos: id (requerido), name, price, type, category, keywords, description, text
+# "text" sobreescribe la construcción automática si se provee.
+# "keywords" es crítico para protocolos: permite que el bot los recupere
+#   cuando el usuario menciona cualquiera de los términos de la lista.
+
+# ── EJEMPLO: ítem simple de biopsia ──────────────────────────────────────────
+{"id":"GIN001","type":"biopsy","category":"ginecología","name":"Biopsia de Cuello Uterino","price":120.00,"keywords":["cérvix","cuello uterino","cuello","colposcopia","cono"],"text":"GIN001 Biopsia de Cuello Uterino $120.00. Códigos alternativos: cérvix, cuello uterino, colposcopia, cono LEEP."}
+
+# ── EJEMPLO: protocolo oncológico (caso de uso clave) ────────────────────────
+{"id":"GIN028","type":"protocol","category":"ginecología","name":"Protocolo Oncológico Ginecológico","price":600.00,"keywords":["laparotomía oncológica","laparotomía","protocolo ginecológico","epiplón","ovario bilateral","diafragma","corredera parietocólica","intestino delgado","salpingo","estadificación oncológica","citorreducción"],"description":"Se aplica cuando la orden incluye múltiples muestras de un mismo acto quirúrgico ginecológico oncológico. Cubre todas las muestras como un único estudio histopatológico.","text":"GIN028 Protocolo Oncológico Ginecológico $600.00 USD\nTipo: protocol | Categoría: ginecología\nIndicaciones: laparotomía oncológica, laparotomía, epiplón, ovario bilateral, diafragma, corredera parietocólica, intestino delgado, salpingo, estadificación oncológica, citorreducción\nNota: Se aplica cuando la orden incluye múltiples muestras de un mismo acto quirúrgico ginecológico. Un solo estudio cubre todas las muestras."}
+
+# ── EJEMPLO: protocolo endometrio/ovario (ya existe en catálogo sp-labs) ─────
+{"id":"GIN028B","type":"protocol","category":"ginecología","name":"Protocolo de Endometrio y Ovario","price":600.00,"keywords":["endometrio","ovario","histerectomía","útero","protocolo endometrio","protocolo ovario"],"text":"GIN028 Protocolo de Endometrio y Ovario $600.00 USD\nTipo: protocol | Categoría: ginecología\nIndicaciones: endometrio, ovario, histerectomía, útero, protocolo endometrio, protocolo ovario"}
+
+# ── EJEMPLO: ítem de citología ───────────────────────────────────────────────
+{"id":"ECE009","type":"cytology","category":"especiales","name":"LCR Líquido Ascítico Pleural Abdominal Bloque Celular","price":80.00,"keywords":["líquido pleural","líquido ascítico","LCR","líquido cefalorraquídeo","líquido abdominal","bloque celular","derrame pleural"],"text":"ECE009 LCR / Líquido Ascítico, Pleural, Abdominal — Bloque Celular $80.00\nIndicaciones: líquido pleural, líquido ascítico, LCR, derrame pleural, bloque celular"}

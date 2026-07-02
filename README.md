@@ -72,7 +72,7 @@ cp .env.example .env
 
 ```bash
 # Create the shared Docker network (one-time)
-docker network create app
+docker network create lgbot-net
 
 docker compose up -d
 ```
@@ -157,7 +157,12 @@ The bot is now live — message it on Telegram.
 |---|---|---|
 | `GET` | `/admin/ui` | Admin panel HTML (no auth) |
 | `GET` | `/admin/tenants` | List tenants |
-| `POST` | `/admin/tenants` | Create tenant |
+| `POST` | `/admin/tenants` | Create tenant (returns one-time API key) |
+| `PATCH` | `/admin/tenants/{slug}` | Update tenant fields |
+| `DELETE` | `/admin/tenants/{slug}` | Delete tenant |
+| `GET` | `/admin/tenants/{slug}/webhook-status` | Check Telegram webhook registration status |
+| `POST` | `/admin/tenants/{slug}/regen-key` | Rotate tenant API key |
+| `GET` | `/admin/billing/{tenant_slug}` | Tenant billing/plan info |
 | `POST` | `/admin/index` | Upload + index document |
 | `GET` | `/admin/index/{job_id}` | Job status |
 | `GET` | `/admin/index?tenant_slug=X` | List jobs for tenant |
@@ -167,6 +172,7 @@ The bot is now live — message it on Telegram.
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/operator/resume/{thread_id}` | Resume a human-escalated conversation |
+| `GET` | `/operator/pending` | List threads awaiting operator response |
 
 ### Health
 
@@ -233,9 +239,13 @@ uv run pytest -m "not eval" --tb=short -q
 | File | What it covers |
 |---|---|
 | `test_telegram_webhook.py` | Webhook handler edge cases (auth, routing, voice, graph errors) — no live services |
+| `test_whatsapp_dedup.py` | WhatsApp dedup cache — LRU eviction, duplicate message detection |
+| `test_tenant_crud.py` | Tenant CRUD endpoints (create, patch, delete, regen-key, webhook-status) — no live services |
 | `test_admin_api.py` | Admin API edge cases (auth, tenant CRUD, indexing jobs) — no live services |
+| `test_catalog_qa.py` | Catalog response QA — verifies correct context/chunks passed to LLM |
 | `test_graph.py` | LangGraph routing logic |
-| `test_nodes.py` | Individual node behavior |
+| `test_nodes.py` | Individual node behavior (triage fallback paths, fence stripping) |
+| `test_policies.py` | Plan-based policy enforcement (free/basic/pro limits) |
 | `test_indexing.py` | Document chunking + embedding pipeline |
 | `test_security.py` | Injection scanner, rate limiting |
 | `test_scheduler.py` | APScheduler interrupt expiry |
@@ -254,7 +264,7 @@ echo "TRAEFIK_HOST=bot.yourdomain.com" >> .env
 docker compose up -d
 ```
 
-Traefik must be running on the `app` Docker network with a `letsencrypt` certificate resolver configured. Register the Telegram webhook pointing to `https://bot.yourdomain.com/webhook/telegram/<slug>`.
+Traefik must be running on the `lgbot-net` Docker network with a `letsencrypt` certificate resolver configured. Register the Telegram webhook pointing to `https://bot.yourdomain.com/webhook/telegram/<slug>`.
 
 ---
 
@@ -282,5 +292,9 @@ docs/
 ├── adr/             # Architecture Decision Records (ADR-001 … ADR-004)
 └── agent-dna.md     # AgentState field-by-field contract and versioning rules
 tests/               # pytest test suite
+CHANGELOG.md         # Release history
+DESIGN.md            # Admin panel design system (colors, typography, components)
+TODOS.md             # Accepted deferred work items
+VERSION              # Current version (semver: major.minor.patch.build)
 start-tunnel.ps1     # Windows: starts cloudflared tunnel + registers Telegram webhook
 ```
