@@ -1,5 +1,6 @@
 import pytest
 from langchain_core.messages import HumanMessage
+
 from app.channels.telegram import _SEEN_UPDATES
 from app.channels.whatsapp import _SEEN_WA
 

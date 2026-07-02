@@ -1,7 +1,6 @@
 """Unit tests for WhatsApp dedup cache (_is_duplicate_wa)."""
-import pytest
 
-from app.channels.whatsapp import _is_duplicate_wa, _SEEN_WA
+from app.channels.whatsapp import _SEEN_WA, _is_duplicate_wa
 
 
 def test_first_call_returns_false():

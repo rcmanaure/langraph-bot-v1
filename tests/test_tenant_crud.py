@@ -34,13 +34,13 @@ if "app.services.indexer" not in sys.modules:
     _indexer_stub.run_index_job = _stub_run_index_job
     sys.modules["app.services.indexer"] = _indexer_stub
 
-import pytest
-from fastapi import FastAPI
-from httpx import ASGITransport, AsyncClient
+import pytest  # noqa: E402
+from fastapi import FastAPI  # noqa: E402
+from httpx import ASGITransport, AsyncClient  # noqa: E402
 
-from app.auth import verify_operator_key
-from app.routes.admin import router
-
+from app.auth import verify_operator_key  # noqa: E402
+from app.channels.telegram import delete_webhook, get_webhook_info, set_webhook  # noqa: E402
+from app.routes.admin import router  # noqa: E402
 
 # ── App / request helpers ─────────────────────────────────────────────────────
 
@@ -474,9 +474,6 @@ async def test_webhook_status_error_when_api_fails():
 # ═════════════════════════════════════════════════════════════════════════════
 # T3 — telegram helpers: set_webhook, delete_webhook, get_webhook_info
 # ═════════════════════════════════════════════════════════════════════════════
-
-from app.channels.telegram import delete_webhook, get_webhook_info, set_webhook
-
 
 def _httpx_ctx(mock_client):
     """Patch httpx.AsyncClient used by telegram helpers."""
