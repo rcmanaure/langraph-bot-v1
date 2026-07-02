@@ -102,11 +102,31 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> list[dict]:
         if not embed_text or scan_chunk_for_injection(embed_text):
             continue
 
+        # Embedding models cap at ~8k tokens; 6000 chars ≈ safe upper bound for any item
+        if len(embed_text) > 6000:
+            logger.warning("jsonl_text_truncated file=%s line=%d chars=%d", filename, line_num, len(embed_text))
+            embed_text = embed_text[:6000]
+
         item_id = str(item.get("id", line_num))
+        meta: dict = {}
+        if item.get("id") is not None:
+            meta["id"] = str(item["id"])
+        if item.get("price") is not None:
+            meta["price"] = float(item["price"])
+        if item.get("type"):
+            meta["type"] = str(item["type"])
+        if item.get("category"):
+            meta["category"] = str(item["category"])
+        if item.get("keywords"):
+            kws = item["keywords"] if isinstance(item["keywords"], list) else [item["keywords"]]
+            meta["keywords"] = [str(k) for k in kws]
+
         chunks.append({
             "content": embed_text,
             "source": f"{filename}:{item_id}",
             "page": line_num,
+            "chunk_type": str(item["type"]) if item.get("type") else None,
+            "metadata": meta or None,
         })
 
     return chunks
@@ -178,6 +198,8 @@ async def run_index_job(
                         page=c["page"],
                         content=c["content"],
                         embedding=vec,
+                        chunk_type=c.get("chunk_type"),
+                        metadata_=c.get("metadata"),
                     )
                     for c, vec in zip(batch, vecs)
                 ])
