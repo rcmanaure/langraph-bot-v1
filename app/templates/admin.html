@@ -572,7 +572,7 @@
                   <div>
                     <svg class="w-10 h-10 mx-auto text-gray-300 mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"/></svg>
                     <p class="text-sm text-gray-500">Drag here or <span class="text-blue-600 font-medium">click to select</span></p>
-                    <p class="text-xs text-gray-400 mt-1">PDF or Markdown (.pdf, .md)</p>
+                    <p class="text-xs text-gray-400 mt-1">PDF, Markdown or JSONL catalog (.pdf, .md, .jsonl)</p>
                   </div>
                 </template>
                 <template x-if="up.file">
@@ -584,9 +584,15 @@
                     </button>
                   </div>
                 </template>
-                <input x-ref="fileInput" type="file" accept=".pdf,.md" class="hidden" @change="up.file=$event.target.files[0]">
+                <input x-ref="fileInput" type="file" accept=".pdf,.md,.jsonl" class="hidden" @change="up.file=$event.target.files[0]">
               </div>
             </div>
+
+            <!-- Auto-replace hint -->
+            <p class="text-xs text-gray-400 flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 flex-shrink-0 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              Re-uploading a file with the same name replaces its previous embeddings automatically.
+            </p>
 
             <!-- Progress -->
             <div x-show="up.jobId" class="rounded-xl border border-gray-200 bg-gray-50 p-4">
