@@ -38,15 +38,22 @@ async def retrieve_chunks(db: AsyncSession, query: str, namespace: str) -> list[
         """),
         {"qv": str(query_vec), "ns": namespace, "k": settings.top_k_results},
     )
-    return [
+    rows = result.fetchall()
+    chunks = [
         {
             "content": r.content,
             "source": r.source,
             "page": r.page,
             "similarity": round(float(r.similarity), 3),
         }
-        for r in result.fetchall()
+        for r in rows
     ]
+    if chunks:
+        top = chunks[0]
+        logger.info("retrieve_top ns=%s sim=%.3f src=%s", namespace, top["similarity"], top["source"])
+    else:
+        logger.warning("retrieve_empty ns=%s query=%s", namespace, query[:60])
+    return chunks
 
 
 def cap_chunks_to_tokens(chunks: list[dict], max_tokens: int) -> list[dict]:

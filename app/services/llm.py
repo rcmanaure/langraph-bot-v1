@@ -10,6 +10,7 @@ def get_chat_llm(fallback: bool = False) -> ChatOpenAI:
         api_key=settings.openrouter_api_key,
         base_url=settings.openrouter_base_url,
         default_headers={"HTTP-Referer": f"https://{settings.app_domain}"},
+        timeout=60,
     )
 
 

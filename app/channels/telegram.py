@@ -1,5 +1,7 @@
+import base64
 import hmac
 import logging
+import re
 from collections import OrderedDict
 
 import httpx
@@ -8,6 +10,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
 from app.channels.base import ChannelEvent
+from app.config import settings
 from app.db import AsyncSessionLocal
 
 logger = logging.getLogger(__name__)
@@ -75,14 +78,22 @@ async def get_webhook_info(token: str) -> dict:
         return {"ok": False, "error": str(exc)}
 
 
+def _wa_to_tg_html(text: str) -> str:
+    """Convert WhatsApp-style markdown to Telegram HTML."""
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    text = re.sub(r'\*([^\*\n]+)\*', r'<b>\1</b>', text)
+    text = re.sub(r'_([^_\n]+)_', r'<i>\1</i>', text)
+    return text
+
+
 async def _send(token: str, chat_id: int | str, text: str) -> None:
     async with httpx.AsyncClient(timeout=10) as c:
         r = await c.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": text},
+            json={"chat_id": chat_id, "text": _wa_to_tg_html(text), "parse_mode": "HTML"},
         )
         if r.status_code != 200:
-            logger.warning("tg_send_failed chat=%s status=%d", chat_id, r.status_code)
+            logger.warning("tg_send_failed chat=%s status=%d body=%s", chat_id, r.status_code, r.text[:120])
 
 
 async def _download_file(token: str, file_id: str) -> bytes:
@@ -90,6 +101,41 @@ async def _download_file(token: str, file_id: str) -> bytes:
         meta = await c.get(f"https://api.telegram.org/bot{token}/getFile?file_id={file_id}")
         file_path = meta.json()["result"]["file_path"]
         return (await c.get(f"https://api.telegram.org/file/bot{token}/{file_path}")).content
+
+
+_VISION_EXTRACT_PROMPT = (
+    "Analiza esta imagen médica. Extrae el procedimiento o examen solicitado y "
+    "formula una pregunta de precio en español. "
+    "Responde ÚNICAMENTE con la pregunta, por ejemplo: "
+    "'¿Cuánto cuesta una biopsia de pericardio?' o '¿Cuál es el precio de una resección de tumor de mama?'. "
+    "Sin explicaciones adicionales."
+)
+
+
+async def _extract_procedure_query(img_bytes: bytes, caption: str) -> str:
+    if not settings.openai_vision_model:
+        raise RuntimeError("OPENAI_VISION_MODEL not configured")
+    prompt = f"{caption}\n\n{_VISION_EXTRACT_PROMPT}" if caption else _VISION_EXTRACT_PROMPT
+    img_b64 = base64.b64encode(img_bytes).decode()
+    async with httpx.AsyncClient(timeout=60) as c:
+        r = await c.post(
+            f"{settings.openrouter_base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
+            json={
+                "model": settings.openai_vision_model,
+                "messages": [{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                    ],
+                }],
+            },
+        )
+    if r.status_code != 200:
+        logger.warning("tg_vision_api_failed status=%d body=%s", r.status_code, r.text[:200])
+        raise RuntimeError(f"Vision API returned {r.status_code}")
+    return r.json()["choices"][0]["message"]["content"].strip()
 
 
 class TelegramAdapter:
@@ -163,6 +209,26 @@ async def _process_update(
             text=text_content,
             thread_id=f"tenant:{tenant_slug}:user:{user_id}:channel:telegram",
         )
+    elif "photo" in msg:
+        if not settings.openai_vision_model:
+            await _send(bot_token, chat_id, "El análisis de imágenes no está habilitado.")
+            return
+        photo = msg["photo"][-1]  # largest resolution
+        caption = msg.get("caption", "")
+        try:
+            img_bytes = await _download_file(bot_token, photo["file_id"])
+            procedure_query = await _extract_procedure_query(img_bytes, caption)
+        except Exception as exc:
+            logger.warning("tg_vision_failed user=%s err=%s", user_id, exc)
+            await _send(bot_token, chat_id, "No pude procesar la imagen. Por favor intenta de nuevo.")
+            return
+        logger.warning("tg_vision_extracted tenant=%s query=%s", tenant_slug, procedure_query[:120])
+        event = ChannelEvent(
+            tenant_slug=tenant_slug, channel="telegram",
+            user_id=user_id, chat_id=str(chat_id),
+            text=procedure_query,
+            thread_id=f"tenant:{tenant_slug}:user:{user_id}:channel:telegram",
+        )
     else:
         event = await adapter.normalize(body)
         if not event:
@@ -203,8 +269,9 @@ async def _process_update(
 
     try:
         await adapter.send(event, response)
-    except Exception:
-        logger.warning("tg_final_send_failed chat=%s", event.chat_id)
+    except Exception as exc:
+        logger.warning("tg_final_send_failed chat=%s type=%s err=%s",
+                       event.chat_id, type(response).__name__, exc, exc_info=True)
 
 
 @router.post("/telegram/{tenant_slug}")
