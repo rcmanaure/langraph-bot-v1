@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from app.graph.nodes.interrupt import interrupt_node
 from app.graph.nodes.triage import triage
 from app.graph.nodes.validate import validate
 from app.graph.nodes.validate_output import validate_output
@@ -239,3 +240,52 @@ async def test_validate_output_fallback_on_double_fail(base_state):
 
     assert "Lo siento" in result["answer"]
     assert isinstance(result["messages"][0], AIMessage)
+
+
+# ---------------------------------------------------------------------------
+# interrupt_node — audit insert must be idempotent across resume re-runs
+# ---------------------------------------------------------------------------
+
+def _mock_db(select_result):
+    mock_result = MagicMock()
+    mock_result.first.return_value = select_result
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock(return_value=mock_result)
+    mock_db.commit = AsyncMock()
+    mock_db.__aenter__ = AsyncMock(return_value=mock_db)
+    mock_db.__aexit__ = AsyncMock(return_value=False)
+    return mock_db
+
+
+@pytest.mark.asyncio
+async def test_interrupt_node_inserts_audit_row_when_none_open(base_state):
+    """First time hitting the interrupt: no open row yet -> insert one."""
+    mock_db = _mock_db(select_result=None)
+
+    with (
+        patch("app.graph.nodes.interrupt.AsyncSessionLocal", MagicMock(return_value=mock_db)),
+        patch("app.graph.nodes.interrupt.interrupt", MagicMock(return_value="respuesta del operador")),
+    ):
+        result = await interrupt_node(base_state)
+
+    # SELECT (existence check) + INSERT
+    assert mock_db.execute.await_count == 2
+    mock_db.commit.assert_awaited_once()
+    assert result["answer"] == "respuesta del operador"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_node_skips_duplicate_insert_on_resume(base_state):
+    """Resuming re-runs the node from the top; an already-open row must not be duplicated."""
+    mock_db = _mock_db(select_result=(1,))
+
+    with (
+        patch("app.graph.nodes.interrupt.AsyncSessionLocal", MagicMock(return_value=mock_db)),
+        patch("app.graph.nodes.interrupt.interrupt", MagicMock(return_value="respuesta del operador")),
+    ):
+        result = await interrupt_node(base_state)
+
+    # Only the SELECT ran — no INSERT, no commit
+    assert mock_db.execute.await_count == 1
+    mock_db.commit.assert_not_awaited()
+    assert result["answer"] == "respuesta del operador"
