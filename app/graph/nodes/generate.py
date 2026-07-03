@@ -1,10 +1,12 @@
 import logging
 
 from langchain_core.messages import AIMessage, SystemMessage, trim_messages
+from langgraph.runtime import Runtime
 from sqlalchemy import text
 
 from app.config import settings
 from app.db import AsyncSessionLocal
+from app.graph.thread import profile_namespace
 from app.services.llm import get_chat_llm
 from app.services.rag import cap_chunks_to_tokens, token_counter
 from app.state import AgentState
@@ -22,13 +24,20 @@ Formato (OBLIGATORIO — compatible WhatsApp/Telegram):
 - Por ítem: - *CÓDIGO* Nombre: $precio"""
 
 _RAG_SYSTEM = """\
-Eres un asistente de {expertise}. Eres amable y cercano, como alguien del negocio respondiendo por WhatsApp.
+Eres un asistente de {expertise}. Eres amable y cercano, como alguien del negocio respondiendo por WhatsApp.{name_hint}
 Usa ÚNICAMENTE el contexto proporcionado. NO uses conocimiento propio fuera de ese contexto.
+
+Cada ítem del contexto trae una "confianza de coincidencia" (0 a 1) calculada por el sistema de
+búsqueda — úsala de forma MECÁNICA, no a tu criterio, para decidir si es COINCIDENCIA EXACTA o
+APROXIMACIÓN:
+- confianza >= 0.65: puede tratarse como coincidencia exacta si además el nombre corresponde.
+- confianza < 0.65: SIEMPRE es APROXIMACIÓN, sin excepción, aunque el nombre te "suene" parecido.
+  Nunca afirmes un precio directo en este caso — primero confirma con el usuario.
 
 REGLAS (en orden de prioridad):
 1. AMBIGÜEDAD: Si lo que pide el usuario puede referirse a varios ítems distintos, haz UNA sola pregunta breve y amable de aclaración. No asumas.
-2. COINCIDENCIA EXACTA: Muestra TODOS los ítems del contexto cuyo nombre coincida con lo que el usuario menciona, sin filtrar por categoría o tipo.
-3. APROXIMACIÓN: Si el ítem exacto no está en el contexto pero hay algo relacionado, preséntalo de forma natural y pregunta: "¿Eso es lo que necesitas?" NO eleves al contacto todavía — espera la confirmación del usuario.
+2. COINCIDENCIA EXACTA (confianza >= 0.65 Y el nombre corresponde): Muestra TODOS los ítems del contexto cuyo nombre coincida con lo que el usuario menciona, sin filtrar por categoría o tipo.
+3. APROXIMACIÓN (confianza < 0.65, O el nombre no corresponde exactamente): Si el ítem exacto no está en el contexto pero hay algo relacionado, preséntalo de forma natural y pregunta: "¿Eso es lo que necesitas?" NO eleves al contacto todavía — espera la confirmación del usuario. NUNCA dés el precio como si fuera seguro.
 4. CONFIRMACIÓN NEGATIVA: Si el usuario responde que la aproximación NO es lo que busca, o si definitivamente no hay nada relacionado, di en una línea que no lo ofrecemos y eleva al contacto: {contact_hint}
 - NO inventes precios ni servicios.
 {format_hint}
@@ -37,7 +46,7 @@ Contexto:
 """
 
 _CATALOG_SYSTEM = """\
-Eres un asistente de {expertise}.
+Eres un asistente de {expertise}.{name_hint}
 Lista TODOS los ítems del catálogo a continuación, organizados por sección.
 No omitas ningún ítem. Usa los nombres y precios exactos del catálogo.{contact_hint}
 {format_hint}
@@ -63,7 +72,18 @@ async def _load_tenant(slug: str) -> dict:
     return {"expertise": expertise, "contact_hint": contact_hint}
 
 
-async def generate(state: AgentState) -> dict:
+async def _load_name_hint(state: AgentState, runtime: Runtime | None) -> str:
+    if runtime is None or runtime.store is None:
+        return ""
+    try:
+        item = await runtime.store.aget(profile_namespace(state), "profile")
+    except Exception:
+        return ""
+    name = (item.value.get("display_name") if item else None) or ""
+    return f" El usuario se llama {name}, salúdalo por su nombre si es natural." if name else ""
+
+
+async def generate(state: AgentState, runtime: Runtime | None = None) -> dict:
     chunks = list(state.get("retrieved_chunks") or [])
     decision = state.get("triage_decision", "rag")
     is_catalog = decision == "catalog"
@@ -89,9 +109,19 @@ async def generate(state: AgentState) -> dict:
             chunks = [{"content": r.content} for r in result.fetchall()]
             chunks = cap_chunks_to_tokens(chunks, settings.retrieval_max_tokens)
 
-    context = "\n\n---\n\n".join(c["content"] for c in chunks) if chunks else "Sin contexto disponible."
+    if not chunks:
+        context = "Sin contexto disponible."
+    elif is_catalog:
+        context = "\n\n---\n\n".join(c["content"] for c in chunks)
+    else:
+        context = "\n\n---\n\n".join(
+            f"{c['content']} [confianza de coincidencia: {c['similarity']:.2f}]"
+            if "similarity" in c else c["content"]
+            for c in chunks
+        )
     template = _CATALOG_SYSTEM if is_catalog else _RAG_SYSTEM
-    system = template.format(context=context, format_hint=_FORMAT_HINT, **tenant_ctx)
+    name_hint = await _load_name_hint(state, runtime)
+    system = template.format(context=context, format_hint=_FORMAT_HINT, name_hint=name_hint, **tenant_ctx)
 
     trimmed = trim_messages(
         state["messages"],

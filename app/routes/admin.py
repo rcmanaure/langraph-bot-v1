@@ -215,6 +215,16 @@ async def delete_tenant(slug: str, body: TenantDelete, _: None = Depends(verify_
             except Exception:
                 pass
 
+        # Long-term profile memory (Store) namespace is (tenant_slug, "channel:user_id"),
+        # serialized as "{slug}.channel:user_id" in the prefix column — same cleanup pattern.
+        try:
+            await db.execute(
+                text("DELETE FROM store WHERE prefix LIKE :prefix"),
+                {"prefix": f"{slug}.%"},
+            )
+        except Exception:
+            pass
+
         try:
             await db.delete(t)
             await db.commit()

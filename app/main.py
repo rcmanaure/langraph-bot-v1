@@ -84,6 +84,7 @@ async def lifespan(app: FastAPI):
     await _cleanup_stuck_jobs()
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+    from langgraph.store.postgres.aio import AsyncPostgresStore
     from psycopg_pool import AsyncConnectionPool
 
     # psycopg3 needs plain postgresql:// (not +asyncpg)
@@ -97,9 +98,14 @@ async def lifespan(app: FastAPI):
         checkpointer = AsyncPostgresSaver(pool)
         await checkpointer.setup()
 
+        # Same pool as the checkpointer — long-term (cross-thread) user profile
+        # memory, separate from the per-thread conversation state above.
+        store = AsyncPostgresStore(pool)
+        await store.setup()
+
         from app.graph.builder import build_graph
 
-        app.state.graph = build_graph(checkpointer=checkpointer)
+        app.state.graph = build_graph(checkpointer=checkpointer, store=store)
         start_scheduler()
         logger.info("langgraph_ready")
         yield

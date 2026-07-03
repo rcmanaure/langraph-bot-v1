@@ -107,6 +107,7 @@ async def test_generate_uses_context():
         contact_hint="",
         context=context,
         format_hint=_FORMAT_HINT,
+        name_hint="",
     )
     llm = _eval_llm()
     response = await llm.ainvoke([
@@ -129,6 +130,7 @@ async def test_generate_admits_missing_context():
         contact_hint="",
         context=context,
         format_hint=_FORMAT_HINT,
+        name_hint="",
     )
     llm = _eval_llm()
     response = await llm.ainvoke([

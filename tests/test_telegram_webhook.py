@@ -43,6 +43,11 @@ def voice_update(file_id="f1", file_size=1024, chat_id=100, user_id=42):
                         "voice": {"file_id": file_id, "file_size": file_size}}}
 
 
+def photo_update(file_id="p1", caption="", chat_id=100, user_id=42):
+    return {"message": {"chat": {"id": chat_id}, "from": {"id": user_id}, "caption": caption,
+                        "photo": [{"file_id": file_id, "file_size": 1024}]}}
+
+
 def edited_update(text="edited text", chat_id=100, user_id=42):
     return {"edited_message": {"chat": {"id": chat_id}, "from": {"id": user_id}, "text": text}}
 
@@ -446,3 +451,78 @@ async def test_duplicate_update_id_not_processed_twice(mock_db, mock_http, mock_
     await _post(app, payload)
     await _post(app, payload)
     mock_graph.ainvoke.assert_awaited_once()
+
+
+# ── 8. Photo messages (vision extraction) ─────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_photo_extracted_query_sent_to_graph(mock_db, mock_http, mock_graph):
+    """Vision extraction succeeds → extracted question becomes the graph input."""
+    with (
+        patch("app.channels.telegram.settings.openai_vision_model", "vision-model"),
+        patch("app.channels.telegram._download_file", new_callable=AsyncMock, return_value=b"img"),
+        patch("app.channels.telegram._extract_procedure_query", new_callable=AsyncMock,
+              return_value="¿Cuánto cuesta un examen de IGRA?"),
+    ):
+        app = make_app(mock_graph)
+        r = await _post(app, photo_update())
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_awaited_once()
+    call_input = mock_graph.ainvoke.call_args[0][0]
+    assert call_input["messages"][0].content == "¿Cuánto cuesta un examen de IGRA?"
+
+
+@pytest.mark.asyncio
+async def test_photo_uncertain_extraction_asks_user_to_type(mock_db, mock_http, mock_graph):
+    """Vision model can't read the image confidently → ask the user to type it,
+    never forward a guessed procedure name into the RAG pipeline (that's how a
+    misread exam silently turns into a confidently wrong price downstream)."""
+    from app.channels.telegram import _VISION_UNCERTAIN
+
+    with (
+        patch("app.channels.telegram.settings.openai_vision_model", "vision-model"),
+        patch("app.channels.telegram._download_file", new_callable=AsyncMock, return_value=b"img"),
+        patch("app.channels.telegram._extract_procedure_query", new_callable=AsyncMock,
+              return_value=_VISION_UNCERTAIN),
+    ):
+        app = make_app(mock_graph)
+        r = await _post(app, photo_update())
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    send_msg = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert send_msg is not None
+    assert "escrib" in str(send_msg).lower()
+
+
+@pytest.mark.asyncio
+async def test_photo_vision_disabled_sends_notice(mock_db, mock_http, mock_graph):
+    """Vision model not configured → user-facing notice, no crash, no graph call."""
+    with patch("app.channels.telegram.settings.openai_vision_model", ""):
+        app = make_app(mock_graph)
+        r = await _post(app, photo_update())
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    send_msg = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert send_msg is not None
+    assert "no está habilitado" in str(send_msg)
+
+
+@pytest.mark.asyncio
+async def test_photo_extraction_failure_sends_error(mock_db, mock_http, mock_graph):
+    """Vision API call raises → user gets a Spanish error, no graph call, no 500."""
+    with (
+        patch("app.channels.telegram.settings.openai_vision_model", "vision-model"),
+        patch("app.channels.telegram._download_file", new_callable=AsyncMock, return_value=b"img"),
+        patch("app.channels.telegram._extract_procedure_query", new_callable=AsyncMock,
+              side_effect=RuntimeError("Vision API returned 500")),
+    ):
+        app = make_app(mock_graph)
+        r = await _post(app, photo_update())
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    send_msg = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert send_msg is not None
+    assert "No pude procesar la imagen" in str(send_msg)

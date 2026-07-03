@@ -103,12 +103,17 @@ async def _download_file(token: str, file_id: str) -> bytes:
         return (await c.get(f"https://api.telegram.org/file/bot{token}/{file_path}")).content
 
 
+_VISION_UNCERTAIN = "__VISION_UNCERTAIN__"
+
 _VISION_EXTRACT_PROMPT = (
-    "Analiza esta imagen médica. Extrae el procedimiento o examen solicitado y "
-    "formula una pregunta de precio en español. "
-    "Responde ÚNICAMENTE con la pregunta, por ejemplo: "
-    "'¿Cuánto cuesta una biopsia de pericardio?' o '¿Cuál es el precio de una resección de tumor de mama?'. "
-    "Sin explicaciones adicionales."
+    "Analiza esta imagen médica (orden de examen, informe, o solicitud de biopsia). "
+    "Transcribe el nombre del procedimiento o examen EXACTAMENTE como aparece escrito en la "
+    "imagen — no lo traduzcas a un sinónimo clínico ni asumas qué examen 'parecido' podría ser. "
+    "Luego formula una pregunta de precio en español usando ese texto literal, por ejemplo: "
+    "'¿Cuánto cuesta un examen de IGRA?' o '¿Cuál es el precio de una resección de tumor de mama?'. "
+    f"Si el texto no es legible, está cortado, borroso, o hay varios exámenes distintos y no "
+    f"puedes determinar cuál se pregunta, responde ÚNICAMENTE con: {_VISION_UNCERTAIN}\n"
+    "En cualquier otro caso responde ÚNICAMENTE con la pregunta, sin explicaciones adicionales."
 )
 
 
@@ -221,6 +226,17 @@ async def _process_update(
         except Exception as exc:
             logger.warning("tg_vision_failed user=%s err=%s", user_id, exc)
             await _send(bot_token, chat_id, "No pude procesar la imagen. Por favor intenta de nuevo.")
+            return
+        if _VISION_UNCERTAIN in procedure_query:
+            # Don't guess and forward an uncertain read into the RAG pipeline —
+            # a wrong procedure name there looks just like a confident, correct
+            # answer downstream. Ask the user to type it instead.
+            logger.warning("tg_vision_uncertain tenant=%s user=%s", tenant_slug, user_id)
+            await _send(
+                bot_token, chat_id,
+                "No pude leer con seguridad el examen en la imagen. "
+                "¿Puedes escribirme el nombre del examen o procedimiento?",
+            )
             return
         logger.warning("tg_vision_extracted tenant=%s query=%s", tenant_slug, procedure_query[:120])
         event = ChannelEvent(
