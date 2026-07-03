@@ -10,6 +10,7 @@ Multi-tenant conversational RAG bot for Telegram (and WhatsApp) built on LangGra
 - Classifies every message: `rag` (document lookup), `catalog` (full list), `human` (escalate to operator), `off_topic` (decline politely)
 - Maintains conversation history per user via LangGraph checkpoints (PostgreSQL)
 - Supports voice messages (transcribed via Groq Whisper)
+- Supports photo messages on Telegram — extracts the procedure/item being asked about via a vision model, then answers from the catalog
 - Human-in-the-loop: operator can take over any conversation thread
 - Admin panel at `/admin/ui` to manage tenants and upload knowledge base documents
 
@@ -123,7 +124,7 @@ curl -X POST "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook" \
 
 ### 6. Index a document
 
-In the admin panel, go to the **Documentos** tab, select your tenant, drag in a PDF or `.md` file, and click **Subir e indexar**. A progress bar tracks chunking and embedding.
+In the admin panel, go to the **Documentos** tab, select your tenant, drag in a PDF, `.md`, or `.jsonl` catalog file, and click **Subir e indexar**. A progress bar tracks chunking and embedding. Re-uploading a file with the same name replaces its previous chunks automatically. See `docs/catalog-schema.jsonl` for the JSONL catalog format (price lists, per-item keywords).
 
 The bot is now live — message it on Telegram.
 
@@ -136,7 +137,7 @@ The bot is now live — message it on Telegram.
 | Tab | What it does |
 |---|---|
 | Tenants | List all tenants, create new ones (returns a one-time API key) |
-| Documentos | Upload PDF or Markdown, track indexing progress in real time |
+| Documentos | Upload PDF, Markdown, or JSONL catalog; track indexing progress in real time |
 | Jobs | History of all indexing jobs across tenants |
 
 ---
@@ -211,6 +212,7 @@ X-Operator-Key: sha256(SECRET_KEY)
 | `LANGCHAIN_API_KEY` | No | LangSmith API key for tracing |
 | `LANGCHAIN_PROJECT` | No | LangSmith project name |
 | `GROQ_API_KEY` | No | Groq API key for voice transcription |
+| `OPENAI_VISION_MODEL` | No | Vision model for photo messages on Telegram (unset disables photo support) |
 | `TRAEFIK_HOST` | No | Production domain (e.g. `bot.yourdomain.com`) |
 | `SENTRY_DSN` | No | Sentry error tracking |
 
@@ -289,8 +291,9 @@ app/
 └── main.py          # FastAPI app + lifespan
 alembic/             # Database migrations
 docs/
-├── adr/             # Architecture Decision Records (ADR-001 … ADR-004)
-└── agent-dna.md     # AgentState field-by-field contract and versioning rules
+├── adr/                 # Architecture Decision Records (ADR-001 … ADR-004)
+├── agent-dna.md         # AgentState field-by-field contract and versioning rules
+└── catalog-schema.jsonl # JSONL catalog format reference (fields, examples)
 tests/               # pytest test suite
 CHANGELOG.md         # Release history
 DESIGN.md            # Admin panel design system (colors, typography, components)

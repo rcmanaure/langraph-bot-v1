@@ -3,7 +3,6 @@ import logging
 import re
 
 from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
-from pydantic import ValidationError
 
 from app.config import settings
 from app.schemas.triage import TriageDecision
@@ -49,7 +48,7 @@ async def triage(state: AgentState) -> dict:
     try:
         result: TriageDecision = await llm.with_structured_output(TriageDecision).ainvoke(payload)
         return {"triage_decision": result.decision}
-    except (ValidationError, Exception) as exc:
+    except Exception as exc:
         logger.warning("triage_structured_failed=%s falling back to json parse", exc)
 
     # Fallback: raw LLM + JSON parse (strip markdown fences if present)

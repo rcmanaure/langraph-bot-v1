@@ -1,13 +1,27 @@
+from langgraph.cache.memory import InMemoryCache
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import CachePolicy, RetryPolicy
 
 from app.graph.nodes.generate import generate
 from app.graph.nodes.interrupt import interrupt_node
 from app.graph.nodes.respond import respond
+from app.graph.nodes.retrieve import cache_key as retrieve_cache_key
 from app.graph.nodes.retrieve import retrieve
 from app.graph.nodes.triage import triage
 from app.graph.nodes.validate import validate
 from app.graph.nodes.validate_output import validate_output
 from app.state import AgentState
+
+# DB/LLM calls can hit transient errors (rate limits, network blips, connection
+# resets) — retry a few times before surfacing to the user.
+_RETRIEVE_RETRY = RetryPolicy(max_attempts=3)
+
+# generate.py already falls back to a second model internally before raising,
+# and the chat client itself retries transient errors before that. Without a
+# tighter cap here, a dual-model outage multiplies into up to 3 full
+# primary+fallback cycles with additive backoff on top of the client's own
+# retries — capped lower to bound worst-case reply latency for a chat turn.
+_GENERATE_RETRY = RetryPolicy(max_attempts=2)
 
 
 def _route_after_validate(state: AgentState) -> str:
@@ -27,9 +41,17 @@ def build_graph(checkpointer=None):
     g = StateGraph(AgentState)
 
     g.add_node("validate", validate)
-    g.add_node("retrieve", retrieve)
+    g.add_node(
+        "retrieve",
+        retrieve,
+        retry_policy=_RETRIEVE_RETRY,
+        cache_policy=CachePolicy(key_func=retrieve_cache_key, ttl=90),
+    )
+    # triage() swallows every exception internally and always falls back to a
+    # default decision, so no retry_policy here would ever fire — see
+    # app/graph/nodes/triage.py.
     g.add_node("triage", triage)
-    g.add_node("generate", generate)
+    g.add_node("generate", generate, retry_policy=_GENERATE_RETRY)
     g.add_node("validate_output", validate_output)
     g.add_node("interrupt_node", interrupt_node)
     g.add_node("respond", respond)
@@ -51,4 +73,4 @@ def build_graph(checkpointer=None):
     g.add_edge("interrupt_node", "respond")
     g.add_edge("respond", END)
 
-    return g.compile(checkpointer=checkpointer)
+    return g.compile(checkpointer=checkpointer, cache=InMemoryCache())
