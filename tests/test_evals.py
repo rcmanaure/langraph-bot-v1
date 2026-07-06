@@ -14,7 +14,7 @@ pytestmark = pytest.mark.eval
 _SKIP = not settings.openrouter_api_key
 skip_reason = "OPENROUTER_API_KEY not set"
 
-EVAL_MODEL = "openrouter/owl-alpha"
+EVAL_MODEL = settings.openai_model
 
 
 def _eval_llm() -> ChatOpenAI:
