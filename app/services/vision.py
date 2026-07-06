@@ -56,18 +56,36 @@ def _strip_fences(content: str) -> str:
     return re.sub(r"\s*```$", "", content).strip()
 
 
-async def _structured_or_json(llm, prompt: str, img_b64: str, schema: type[BaseModel], json_suffix: str):
-    """Ask for a structured field via with_structured_output; if that fails
-    (some vision models don't support tool-calling reliably), retry once with
-    an explicit "reply only with JSON" instruction and parse it by hand —
-    same primary/fallback shape as triage.py."""
+# Per-model memo of whether with_structured_output actually works. Live
+# testing showed the configured vision model fails structured output with a
+# hard 400/404 API error (no tool-use / json_schema / json_mode support at
+# all via OpenRouter for this model) — not just malformed text back. That
+# means the first attempt is a guaranteed-failing network round-trip on
+# every single call until proven otherwise. Once a model is known not to
+# support it, skip straight to the prompted-JSON retry instead of paying for
+# a call that can't succeed — halves the vision calls per stage in steady
+# state. Resets on process restart, which is fine: it's a perf cache, not a
+# correctness dependency, and self-heals with one wasted probe.
+_structured_output_ok: dict[str, bool] = {}
+
+
+async def _structured_or_json(
+    llm, model_name: str, prompt: str, img_b64: str, schema: type[BaseModel], json_suffix: str
+):
+    """Ask for a structured field via with_structured_output; if that fails,
+    retry once with an explicit "reply only with JSON" instruction and parse
+    it by hand — same primary/fallback shape as triage.py."""
     image_block = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
 
-    try:
-        message = HumanMessage(content=[{"type": "text", "text": prompt}, image_block])
-        return await llm.with_structured_output(schema).ainvoke([message])
-    except Exception as exc:
-        logger.warning("vision_structured_failed=%s falling back to json parse", exc)
+    if _structured_output_ok.get(model_name, True):
+        try:
+            message = HumanMessage(content=[{"type": "text", "text": prompt}, image_block])
+            result = await llm.with_structured_output(schema).ainvoke([message])
+            _structured_output_ok[model_name] = True
+            return result
+        except Exception as exc:
+            logger.warning("vision_structured_failed model=%s err=%s falling back to json parse", model_name, exc)
+            _structured_output_ok[model_name] = False
 
     json_message = HumanMessage(content=[{"type": "text", "text": prompt + json_suffix}, image_block])
     resp = await llm.ainvoke([json_message])
@@ -104,9 +122,10 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
     img_b64 = base64.b64encode(img_bytes).decode()
     prompt = f"{caption}\n\n{_VISION_EXTRACT_PROMPT}" if caption else _VISION_EXTRACT_PROMPT
 
+    model_name = settings.openai_vision_model
     try:
         extraction: VisionExtraction = await _structured_or_json(
-            llm, prompt, img_b64, VisionExtraction, _EXTRACT_JSON_SUFFIX
+            llm, model_name, prompt, img_b64, VisionExtraction, _EXTRACT_JSON_SUFFIX
         )
     except Exception as exc:
         logger.warning("vision_extraction_failed=%s defaulting to uncertain", exc)
@@ -118,7 +137,7 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
     verify_prompt = _VERIFY_PROMPT_TEMPLATE.format(claim=extraction.price_question)
     try:
         verification: VisionVerification = await _structured_or_json(
-            llm, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX
+            llm, model_name, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX
         )
     except Exception as exc:
         logger.warning("vision_verification_failed=%s defaulting to uncertain", exc)
