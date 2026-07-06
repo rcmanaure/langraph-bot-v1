@@ -345,16 +345,101 @@ async def test_voice_exactly_at_limit_is_processed(mock_db, mock_http, mock_grap
 
 
 @pytest.mark.asyncio
-async def test_voice_stt_failure_returns_ok(mock_db, mock_http):
-    """STT failure → swallowed, returns ok (no graph call, no error to user)."""
-    app = make_app()
+async def test_voice_stt_failure_sends_user_error(mock_db, mock_http, mock_graph):
+    """STT failure → user gets a clear Spanish error, no graph call, no silence."""
+    app = make_app(mock_graph)
     with patch("app.channels.telegram._download_file",
                new_callable=AsyncMock, return_value=b"audio"), \
          patch("app.services.stt.transcribe",
                new_callable=AsyncMock, side_effect=Exception("whisper down")):
         r = await _post(app, voice_update())
     assert r.status_code == 200
-    assert r.json() == {"ok": True}
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert error_call is not None
+    assert "No pude procesar tu nota de voz" in str(error_call)
+
+
+@pytest.mark.asyncio
+async def test_voice_empty_transcription_sends_user_error(mock_db, mock_http, mock_graph):
+    """Whisper returns "" (no speech detected) → user gets a clear message, not silence."""
+    app = make_app(mock_graph)
+    with patch("app.channels.telegram._download_file",
+               new_callable=AsyncMock, return_value=b"audio"), \
+         patch("app.services.stt.transcribe", new_callable=AsyncMock, return_value=""):
+        r = await _post(app, voice_update())
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert error_call is not None
+    assert "No escuché nada" in str(error_call)
+
+
+@pytest.mark.asyncio
+async def test_voice_stt_not_configured_sends_disabled_notice(mock_db, mock_http, mock_graph):
+    """GROQ_API_KEY unset → distinct "not enabled" message, not the generic STT-failure one."""
+    app = make_app(mock_graph)
+    with patch("app.channels.telegram._download_file",
+               new_callable=AsyncMock, return_value=b"audio"), \
+         patch("app.services.stt.settings.groq_api_key", ""):
+        r = await _post(app, voice_update())
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert error_call is not None
+    assert "no está habilitada" in str(error_call)
+
+
+@pytest.mark.asyncio
+async def test_audio_message_type_is_transcribed(mock_db, mock_http, mock_graph):
+    """Telegram "audio" (uploaded file, distinct from "voice") is transcribed and processed."""
+    payload = {"message": {
+        "chat": {"id": 100}, "from": {"id": 42},
+        "audio": {"file_id": "a1", "file_size": 1024, "mime_type": "audio/mpeg"},
+    }}
+    with patch("app.channels.telegram._download_file",
+               new_callable=AsyncMock, return_value=b"audio"), \
+         patch("app.services.stt.transcribe", new_callable=AsyncMock,
+               return_value="cuanto cuesta") as mock_transcribe:
+        app = make_app(mock_graph)
+        r = await _post(app, payload)
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_awaited_once()
+    mock_transcribe.assert_awaited_once_with(b"audio", "audio.mpeg", "audio/mpeg")
+
+
+@pytest.mark.asyncio
+async def test_video_note_message_type_is_transcribed(mock_db, mock_http, mock_graph):
+    """Telegram "video_note" (round video) is transcribed via Whisper as mp4."""
+    payload = {"message": {
+        "chat": {"id": 100}, "from": {"id": 42},
+        "video_note": {"file_id": "v1", "file_size": 1024},
+    }}
+    with patch("app.channels.telegram._download_file",
+               new_callable=AsyncMock, return_value=b"video"), \
+         patch("app.services.stt.transcribe", new_callable=AsyncMock,
+               return_value="cuanto cuesta") as mock_transcribe:
+        app = make_app(mock_graph)
+        r = await _post(app, payload)
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_awaited_once()
+    mock_transcribe.assert_awaited_once_with(b"video", "video_note.mp4", "video/mp4")
+
+
+@pytest.mark.asyncio
+async def test_typing_sent_before_download_starts(mock_db, mock_http, mock_graph):
+    """Typing indicator fires immediately, before download/STT — proven by the
+    download itself failing and typing having already been sent regardless."""
+    with patch("app.channels.telegram._download_file",
+               new_callable=AsyncMock, side_effect=Exception("network down")):
+        app = make_app(mock_graph)
+        r = await _post(app, voice_update())
+    assert r.status_code == 200
+    typing_call = next((c for c in mock_http.post.call_args_list if "sendChatAction" in str(c)), None)
+    assert typing_call is not None
 
 
 @pytest.mark.asyncio
@@ -451,6 +536,31 @@ async def test_duplicate_update_id_not_processed_twice(mock_db, mock_http, mock_
     await _post(app, payload)
     await _post(app, payload)
     mock_graph.ainvoke.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_same_update_id_different_tenants_both_processed(mock_db, mock_http, mock_graph):
+    """update_id is sequential PER BOT, not globally unique. Two different
+    tenants sending the same update_id must NOT be deduped against each other —
+    regression test for the tenant-scoped dedup key fix."""
+    app = make_app(mock_graph)
+    payload = {"update_id": 4242, **text_update()}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as c:
+        r1 = await c.post(
+            "/webhook/telegram/tenant-a",
+            json=payload,
+            headers={"x-telegram-bot-api-secret-token": SECRET},
+        )
+        r2 = await c.post(
+            "/webhook/telegram/tenant-b",
+            json=payload,
+            headers={"x-telegram-bot-api-secret-token": SECRET},
+        )
+
+    assert r1.status_code == 200
+    assert r2.status_code == 200
+    assert mock_graph.ainvoke.await_count == 2
 
 
 # ── 8. Photo messages (vision extraction) ─────────────────────────────────────

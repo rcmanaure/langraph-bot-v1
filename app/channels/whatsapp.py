@@ -11,14 +11,19 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
 from app.channels.base import ChannelEvent
+from app.config import settings
 from app.crypto import decrypt_value
 from app.db import AsyncSessionLocal
+from app.services.vision import MAX_MEDIA_BYTES, VISION_UNCERTAIN, extract_procedure_query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["whatsapp"])
 
-_WA = "https://graph.facebook.com/v20.0"
+# v20.0 expires 2026-09-24 (Meta guarantees ~2yr support per version) — v23.0 is
+# the current stable release without v25.0's early-release risk. Bump again
+# before ~2028 when v23.0 nears its own expiration.
+_WA = "https://graph.facebook.com/v23.0"
 
 # Dedup cache: wamid → True. Bounded to 1000 entries (LRU).
 _SEEN_WA: OrderedDict[str, bool] = OrderedDict()
@@ -97,11 +102,36 @@ async def _send(phone_number_id: str, token: str, to: str, body: str) -> None:
             logger.warning("wa_send_failed to=%s status=%d body=%s", to, r.status_code, r.text[:80])
 
 
-async def _download_media(media_id: str, token: str) -> bytes:
+async def _get_media_info(media_id: str, token: str) -> dict:
+    """Fetch media metadata (url, file_size, mime_type) without downloading content —
+    lets callers reject oversized media before pulling the full payload."""
     async with httpx.AsyncClient(timeout=30) as c:
-        url = (await c.get(f"{_WA}/{media_id}",
-                           headers={"Authorization": f"Bearer {token}"})).json()["url"]
+        r = await c.get(f"{_WA}/{media_id}", headers={"Authorization": f"Bearer {token}"})
+        return r.json()
+
+
+async def _fetch_media_bytes(url: str, token: str) -> bytes:
+    async with httpx.AsyncClient(timeout=30) as c:
         return (await c.get(url, headers={"Authorization": f"Bearer {token}"})).content
+
+
+async def _mark_read_and_typing(phone_number_id: str, token: str, message_id: str) -> None:
+    """Blue-check the inbound message and show 'typing...' while we process it —
+    vision/RAG can take several seconds and WhatsApp gives no other feedback.
+    Dismissed automatically after 25s or once we reply, whichever is first.
+    Best-effort: a failure here must never block the actual response."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                f"{_WA}/{phone_number_id}/messages",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"messaging_product": "whatsapp", "status": "read",
+                      "message_id": message_id, "typing_indicator": {"type": "text"}},
+            )
+            if r.status_code != 200:
+                logger.warning("wa_typing_indicator_failed status=%d body=%s", r.status_code, r.text[:80])
+    except Exception as exc:
+        logger.warning("wa_typing_indicator_error err=%s", exc)
 
 
 @router.get("/whatsapp/{tenant_slug}")
@@ -208,6 +238,10 @@ async def _handle_message(
         logger.warning("wa_missing_from tenant=%s", tenant_slug)
         return
     msg_type = msg.get("type", "")
+    message_id = msg.get("id", "")
+
+    if message_id and access_token and phone_number_id:
+        await _mark_read_and_typing(phone_number_id, access_token, message_id)
 
     # Update WhatsApp 24h service window
     try:
@@ -229,13 +263,79 @@ async def _handle_message(
     elif msg_type in ("audio", "voice"):
         if not access_token:
             return
+        from app.services.stt import STTNotConfiguredError, transcribe
         try:
-            audio = await _download_media(msg[msg_type]["id"], access_token)
-            from app.services.stt import transcribe
-            text_content = await transcribe(audio, "audio.ogg")
+            info = await _get_media_info(msg[msg_type]["id"], access_token)
+            if info.get("file_size", 0) > MAX_MEDIA_BYTES:
+                if phone_number_id:
+                    await _send(phone_number_id, access_token, from_id,
+                                "Archivo de voz demasiado grande (máx 10MB).")
+                return
+            # mime_type may carry a codecs param (e.g. "audio/ogg; codecs=opus") —
+            # strip it before use as both the Whisper content-type and extension.
+            mime_type = (info.get("mime_type") or "audio/ogg").split(";")[0].strip()
+            ext = mime_type.split("/")[-1] if "/" in mime_type else "ogg"
+            audio = await _fetch_media_bytes(info["url"], access_token)
+            text_content = await transcribe(audio, f"audio.{ext}", mime_type)
+        except STTNotConfiguredError:
+            logger.error("wa_stt_not_configured tenant=%s from=%s", tenant_slug, from_id)
+            if phone_number_id:
+                await _send(phone_number_id, access_token, from_id,
+                            "La transcripción de audio no está habilitada.")
+            return
         except Exception as exc:
             logger.warning("wa_stt_failed from=%s err=%s", from_id, exc)
+            if phone_number_id:
+                await _send(phone_number_id, access_token, from_id,
+                            "No pude procesar tu nota de voz. ¿Puedes escribirme tu consulta?")
             return
+        if not text_content:
+            if phone_number_id:
+                await _send(phone_number_id, access_token, from_id,
+                            "No escuché nada en el audio. ¿Puedes repetirlo o escribirme?")
+            return
+    elif msg_type == "image":
+        if not access_token or not phone_number_id:
+            return
+        if not settings.openai_vision_model:
+            await _send(phone_number_id, access_token, from_id,
+                        "El análisis de imágenes no está habilitado.")
+            return
+        image_obj = msg["image"]
+        caption = image_obj.get("caption", "")
+        try:
+            info = await _get_media_info(image_obj["id"], access_token)
+            if info.get("file_size", 0) > MAX_MEDIA_BYTES:
+                await _send(phone_number_id, access_token, from_id,
+                            "Imagen demasiado grande (máx 10MB).")
+                return
+            img_bytes = await _fetch_media_bytes(info["url"], access_token)
+            procedure_query = await extract_procedure_query(img_bytes, caption)
+        except Exception as exc:
+            logger.warning("wa_vision_failed from=%s err=%s", from_id, exc)
+            await _send(phone_number_id, access_token, from_id,
+                        "No pude procesar la imagen. Por favor intenta de nuevo.")
+            return
+        if VISION_UNCERTAIN in procedure_query:
+            # Don't guess and forward an uncertain read into the RAG pipeline —
+            # see app/channels/telegram.py for the matching Telegram-side comment.
+            logger.warning("wa_vision_uncertain tenant=%s from=%s", tenant_slug, from_id)
+            await _send(
+                phone_number_id, access_token, from_id,
+                "No pude leer con seguridad el examen en la imagen. "
+                "¿Puedes escribirme el nombre del examen o procedimiento?",
+            )
+            return
+        logger.warning("wa_vision_extracted tenant=%s query=%s", tenant_slug, procedure_query[:120])
+        text_content = procedure_query
+    elif msg_type == "document":
+        # PDF/document orders aren't run through vision (would need PDF→image
+        # conversion first) — ask for a photo instead of going silent like
+        # images used to before vision support was added.
+        if access_token and phone_number_id:
+            await _send(phone_number_id, access_token, from_id,
+                        "Por ahora no puedo leer documentos PDF. ¿Puedes mandarme una foto del examen?")
+        return
     else:
         logger.debug("wa_unsupported_type type=%s from=%s", msg_type, from_id)
         return

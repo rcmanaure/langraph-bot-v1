@@ -1,4 +1,3 @@
-import base64
 import hmac
 import logging
 import re
@@ -12,22 +11,27 @@ from sqlalchemy import text
 from app.channels.base import ChannelEvent
 from app.config import settings
 from app.db import AsyncSessionLocal
+from app.services.vision import MAX_MEDIA_BYTES as MAX_VOICE_BYTES
+from app.services.vision import VISION_UNCERTAIN as _VISION_UNCERTAIN
+from app.services.vision import extract_procedure_query as _extract_procedure_query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["telegram"])
 
-MAX_VOICE_BYTES = 10 * 1024 * 1024  # 10 MB
-
-# Dedup cache: update_id → True. Bounded to 1000 entries (LRU).
-_SEEN_UPDATES: OrderedDict[int, bool] = OrderedDict()
+# Dedup cache: "tenant_slug:update_id" → True. Bounded to 1000 entries (LRU).
+# update_id is sequential PER BOT, not globally unique — two tenants can emit
+# the same update_id, so the key must include tenant_slug or one tenant's
+# message gets silently dropped as a "duplicate" of another tenant's.
+_SEEN_UPDATES: OrderedDict[str, bool] = OrderedDict()
 _SEEN_MAX = 1000
 
 
-def _is_duplicate(update_id: int) -> bool:
-    if update_id in _SEEN_UPDATES:
+def _is_duplicate(tenant_slug: str, update_id: int) -> bool:
+    key = f"{tenant_slug}:{update_id}"
+    if key in _SEEN_UPDATES:
         return True
-    _SEEN_UPDATES[update_id] = True
+    _SEEN_UPDATES[key] = True
     if len(_SEEN_UPDATES) > _SEEN_MAX:
         _SEEN_UPDATES.popitem(last=False)
     return False
@@ -103,44 +107,20 @@ async def _download_file(token: str, file_id: str) -> bytes:
         return (await c.get(f"https://api.telegram.org/file/bot{token}/{file_path}")).content
 
 
-_VISION_UNCERTAIN = "__VISION_UNCERTAIN__"
-
-_VISION_EXTRACT_PROMPT = (
-    "Analiza esta imagen médica (orden de examen, informe, o solicitud de biopsia). "
-    "Transcribe el nombre del procedimiento o examen EXACTAMENTE como aparece escrito en la "
-    "imagen — no lo traduzcas a un sinónimo clínico ni asumas qué examen 'parecido' podría ser. "
-    "Luego formula una pregunta de precio en español usando ese texto literal, por ejemplo: "
-    "'¿Cuánto cuesta un examen de IGRA?' o '¿Cuál es el precio de una resección de tumor de mama?'. "
-    f"Si el texto no es legible, está cortado, borroso, o hay varios exámenes distintos y no "
-    f"puedes determinar cuál se pregunta, responde ÚNICAMENTE con: {_VISION_UNCERTAIN}\n"
-    "En cualquier otro caso responde ÚNICAMENTE con la pregunta, sin explicaciones adicionales."
-)
+# Telegram distinguishes three voice-ish message types: "voice" (voice note),
+# "audio" (uploaded audio file — real mime_type varies), "video_note" (round
+# video message — Whisper accepts mp4). Fixed filename/mime for the first and
+# last; "audio" reports its own mime_type in the payload.
+_AUDIO_MSG_TYPES = ("voice", "audio", "video_note")
+_FIXED_AUDIO_FORMAT = {"voice": ("voice.ogg", "audio/ogg"), "video_note": ("video_note.mp4", "video/mp4")}
 
 
-async def _extract_procedure_query(img_bytes: bytes, caption: str) -> str:
-    if not settings.openai_vision_model:
-        raise RuntimeError("OPENAI_VISION_MODEL not configured")
-    prompt = f"{caption}\n\n{_VISION_EXTRACT_PROMPT}" if caption else _VISION_EXTRACT_PROMPT
-    img_b64 = base64.b64encode(img_bytes).decode()
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.post(
-            f"{settings.openrouter_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-            json={
-                "model": settings.openai_vision_model,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    ],
-                }],
-            },
-        )
-    if r.status_code != 200:
-        logger.warning("tg_vision_api_failed status=%d body=%s", r.status_code, r.text[:200])
-        raise RuntimeError(f"Vision API returned {r.status_code}")
-    return r.json()["choices"][0]["message"]["content"].strip()
+def _audio_filename_and_mime(msg_type: str, media: dict) -> tuple[str, str]:
+    if msg_type in _FIXED_AUDIO_FORMAT:
+        return _FIXED_AUDIO_FORMAT[msg_type]
+    mime = media.get("mime_type") or "audio/mpeg"
+    ext = mime.split("/")[-1] if "/" in mime else "mp3"
+    return f"audio.{ext}", mime
 
 
 class TelegramAdapter:
@@ -158,7 +138,7 @@ class TelegramAdapter:
 
     async def normalize(self, body: dict) -> ChannelEvent | None:
         msg = body.get("message") or body.get("edited_message")
-        if not msg or "voice" in msg:
+        if not msg or any(k in msg for k in _AUDIO_MSG_TYPES):
             return None
         text = msg.get("text", "").strip()
         if not text:
@@ -194,19 +174,40 @@ async def _process_update(
     user_id = str((msg.get("from") or {}).get("id", "unknown"))
     adapter = TelegramAdapter(tenant_slug, bot_token, webhook_secret)
 
-    if "voice" in msg:
-        voice = msg["voice"]
-        if voice.get("file_size", 0) > MAX_VOICE_BYTES:
+    # Feedback immediately, before any download/STT/vision work — those can
+    # take several seconds and the user should see a signal right away.
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(
+                f"https://api.telegram.org/bot{bot_token}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+            )
+    except Exception:
+        pass
+
+    audio_type = next((t for t in _AUDIO_MSG_TYPES if t in msg), None)
+    if audio_type:
+        media = msg[audio_type]
+        if media.get("file_size", 0) > MAX_VOICE_BYTES:
             await _send(bot_token, chat_id, "Archivo de voz demasiado grande (máx 10MB).")
             return
+        filename, mime_type = _audio_filename_and_mime(audio_type, media)
+        from app.services.stt import STTNotConfiguredError, transcribe
         try:
-            audio = await _download_file(bot_token, voice["file_id"])
-            from app.services.stt import transcribe
-            text_content = await transcribe(audio, "voice.ogg")
+            audio = await _download_file(bot_token, media["file_id"])
+            text_content = await transcribe(audio, filename, mime_type)
+        except STTNotConfiguredError:
+            logger.error("tg_stt_not_configured tenant=%s user=%s", tenant_slug, user_id)
+            await _send(bot_token, chat_id, "La transcripción de audio no está habilitada.")
+            return
         except Exception as exc:
             logger.warning("tg_stt_failed user=%s err=%s", user_id, exc)
+            await _send(bot_token, chat_id,
+                        "No pude procesar tu nota de voz. ¿Puedes escribirme tu consulta?")
             return
         if not text_content:
+            await _send(bot_token, chat_id,
+                        "No escuché nada en el audio. ¿Puedes repetirlo o escribirme?")
             return
         event = ChannelEvent(
             tenant_slug=tenant_slug, channel="telegram",
@@ -260,15 +261,6 @@ async def _process_update(
         return
 
     try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(
-                f"https://api.telegram.org/bot{bot_token}/sendChatAction",
-                json={"chat_id": event.chat_id, "action": "typing"},
-            )
-    except Exception:
-        pass
-
-    try:
         result = await graph.ainvoke(
             {"tenant_id": tenant_slug, "thread_id": event.thread_id,
              "messages": [HumanMessage(content=event.text)], "answer": ""},
@@ -315,7 +307,7 @@ async def telegram_webhook(
     body = await request.json()
 
     update_id = body.get("update_id")
-    if update_id is not None and _is_duplicate(update_id):
+    if update_id is not None and _is_duplicate(tenant_slug, update_id):
         logger.info("tg_duplicate_update update_id=%s tenant=%s", update_id, tenant_slug)
         return {"ok": True}
 
