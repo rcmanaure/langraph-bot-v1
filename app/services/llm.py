@@ -15,6 +15,16 @@ def get_chat_llm(fallback: bool = False) -> ChatOpenAI:
     )
 
 
+def get_vision_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=settings.openai_vision_model,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        default_headers={"HTTP-Referer": f"https://{settings.app_domain}"},
+        timeout=60,
+    )
+
+
 def get_embeddings() -> CachedEmbeddings:
     underlying = OpenAIEmbeddings(
         model=settings.embedding_model,
