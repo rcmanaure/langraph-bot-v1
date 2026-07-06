@@ -1,5 +1,6 @@
 """Tests for the indexing pipeline's pure functions — no DB/LLM needed."""
 
+from app.config import settings
 from app.services.indexer import _chunk_page, _extract_pages
 
 
@@ -52,3 +53,35 @@ def test_chunk_page_sets_metadata():
     assert len(chunks) >= 1
     assert chunks[0]["source"] == "manual.pdf"
     assert chunks[0]["page"] == 3
+
+
+def test_chunk_page_applies_overlap_at_paragraph_merge_boundary():
+    """Regression test: chunk_overlap used to only apply inside the
+    oversized-single-paragraph split — the common case (merging paragraphs
+    up to chunk_size) started every new chunk from scratch with zero
+    overlap, silently ignoring the configured value at that boundary."""
+    paragraphs = [f"Párrafo número {i} con contenido suficientemente largo para el test." for i in range(20)]
+    text = "\n\n".join(paragraphs)
+
+    chunks = _chunk_page(text, "source.txt", 0)
+
+    assert len(chunks) >= 2
+    # .strip() (applied to the final chunk text) can eat a leading char of
+    # the raw tail slice if it lands on whitespace — strip before comparing.
+    tail_of_first = chunks[0]["content"][-settings.chunk_overlap :].strip()
+    assert tail_of_first in chunks[1]["content"]
+
+
+def test_chunk_page_carries_overlap_out_of_oversized_paragraph_split():
+    # Distinguishable tokens (not a repeated word) so a broken overlap carry
+    # would actually fail this test instead of trivially matching itself.
+    long_para = " ".join(f"palabra{i:04d}" for i in range(200))  # exceeds chunk_size
+    short_para = "Un parrafo corto que sigue justo despues del parrafo largo dividido."
+    text = f"{long_para}\n\n{short_para}"
+
+    chunks = _chunk_page(text, "source.txt", 0)
+
+    assert len(chunks) >= 2
+    last_split_fragment = chunks[-2]["content"]
+    tail = last_split_fragment[-settings.chunk_overlap :].strip()
+    assert tail in chunks[-1]["content"]

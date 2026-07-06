@@ -30,20 +30,31 @@ def _chunk_page(text: str, source: str, page: int) -> list[dict]:
     size, overlap = settings.chunk_size, settings.chunk_overlap
     paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 50]
     merged, current = [], ""
+
+    def _tail(chunk: str) -> str:
+        # chunk_overlap is only honored inside the oversized-paragraph split
+        # below (a fixed-stride sliding window) — every other chunk boundary
+        # (the common case: paragraphs merged up to `size`) used to start the
+        # next chunk from scratch, silently dropping the configured overlap
+        # at every split point. Carry the tail of the just-finalized chunk
+        # forward so continuity holds at every boundary, not just that one.
+        return chunk[-overlap:] if overlap > 0 else ""
+
     for para in paragraphs:
         if len(para) > size:
             if current:
                 merged.append(current)
-                current = ""
             for start in range(0, len(para), size - overlap):
                 merged.append(para[start : start + size])
+            current = _tail(merged[-1])
         elif not current:
             current = para
         elif len(current) + 2 + len(para) <= size:
             current += "\n\n" + para
         else:
             merged.append(current)
-            current = para
+            tail = _tail(current)
+            current = f"{tail}\n\n{para}" if tail else para
     if current:
         merged.append(current)
     return [

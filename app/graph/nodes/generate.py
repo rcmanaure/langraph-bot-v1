@@ -27,17 +27,17 @@ _RAG_SYSTEM = """\
 Eres un asistente de {expertise}. Eres amable y cercano, como alguien del negocio respondiendo por WhatsApp.{name_hint}
 Usa ÚNICAMENTE el contexto proporcionado. NO uses conocimiento propio fuera de ese contexto.
 
-Cada ítem del contexto trae una "confianza de coincidencia" (0 a 1) calculada por el sistema de
-búsqueda — úsala de forma MECÁNICA, no a tu criterio, para decidir si es COINCIDENCIA EXACTA o
-APROXIMACIÓN:
-- confianza >= 0.65: puede tratarse como coincidencia exacta si además el nombre corresponde.
-- confianza < 0.65: SIEMPRE es APROXIMACIÓN, sin excepción, aunque el nombre te "suene" parecido.
-  Nunca afirmes un precio directo en este caso — primero confirma con el usuario.
+Cada ítem del contexto ya viene etiquetado por el sistema de búsqueda como [COINCIDENCIA EXACTA] o
+[APROXIMACIÓN (confianza baja)] — es una clasificación ya calculada, NO la recalcules ni la
+cuestiones aunque el nombre te "suene" parecido:
+- [COINCIDENCIA EXACTA]: trátalo como tal si además el nombre corresponde a lo que pide el usuario.
+- [APROXIMACIÓN (confianza baja)]: SIEMPRE es aproximación, sin excepción. Nunca afirmes un precio
+  directo en este caso — primero confirma con el usuario.
 
 REGLAS (en orden de prioridad):
 1. AMBIGÜEDAD: Si lo que pide el usuario puede referirse a varios ítems distintos, haz UNA sola pregunta breve y amable de aclaración. No asumas.
-2. COINCIDENCIA EXACTA (confianza >= 0.65 Y el nombre corresponde): Muestra TODOS los ítems del contexto cuyo nombre coincida con lo que el usuario menciona, sin filtrar por categoría o tipo.
-3. APROXIMACIÓN (confianza < 0.65, O el nombre no corresponde exactamente): Si el ítem exacto no está en el contexto pero hay algo relacionado, preséntalo de forma natural y pregunta: "¿Eso es lo que necesitas?" NO eleves al contacto todavía — espera la confirmación del usuario. NUNCA dés el precio como si fuera seguro.
+2. COINCIDENCIA EXACTA (etiquetado [COINCIDENCIA EXACTA] Y el nombre corresponde): Muestra TODOS los ítems del contexto cuyo nombre coincida con lo que el usuario menciona, sin filtrar por categoría o tipo.
+3. APROXIMACIÓN (etiquetado [APROXIMACIÓN] O el nombre no corresponde exactamente): Si el ítem exacto no está en el contexto pero hay algo relacionado, preséntalo de forma natural y pregunta: "¿Eso es lo que necesitas?" NO eleves al contacto todavía — espera la confirmación del usuario. NUNCA dés el precio como si fuera seguro.
 4. CONFIRMACIÓN NEGATIVA: Si el usuario responde que la aproximación NO es lo que busca, o si definitivamente no hay nada relacionado, di en una línea que no lo ofrecemos y eleva al contacto: {contact_hint}
 - NO inventes precios ni servicios.
 {format_hint}
@@ -57,6 +57,11 @@ Catálogo:
 _OFF_TOPIC_MSG = "Lo siento, no puedo ayudarte con eso. Soy un asistente especializado en {expertise}."
 
 _FALLBACK = "Lo siento, no pude procesar tu consulta en este momento. Por favor intenta de nuevo."
+
+
+def _match_tag(similarity: float) -> str:
+    is_exact = similarity >= settings.exact_match_threshold
+    return "COINCIDENCIA EXACTA" if is_exact else "APROXIMACIÓN (confianza baja)"
 
 
 async def _load_tenant(slug: str) -> dict:
@@ -115,7 +120,7 @@ async def generate(state: AgentState, runtime: Runtime | None = None) -> dict:
         context = "\n\n---\n\n".join(c["content"] for c in chunks)
     else:
         context = "\n\n---\n\n".join(
-            f"{c['content']} [confianza de coincidencia: {c['similarity']:.2f}]"
+            f"{c['content']} [{_match_tag(c['similarity'])}]"
             if "similarity" in c else c["content"]
             for c in chunks
         )

@@ -7,6 +7,7 @@ from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
 from app.graph.nodes.generate import generate
 from app.graph.nodes.interrupt import interrupt_node
 from app.graph.nodes.prune_history import _KEEP_LAST, _PRUNE_TRIGGER, prune_history
+from app.graph.nodes.retrieve import _last_human_query
 from app.graph.nodes.triage import triage
 from app.graph.nodes.update_profile import update_profile
 from app.graph.nodes.validate import validate
@@ -37,6 +38,60 @@ async def test_validate_no_human_message(base_state):
     base_state["messages"] = [AIMessage(content="hello")]
     result = await validate(base_state)
     assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# retrieve node — _last_human_query
+# ---------------------------------------------------------------------------
+
+def test_last_human_query_returns_last_message_normally(base_state):
+    base_state["messages"] = [HumanMessage(content="¿Cuánto cuesta un examen de IGRA?")]
+    assert _last_human_query(base_state) == "¿Cuánto cuesta un examen de IGRA?"
+
+
+def test_last_human_query_falls_back_on_bare_confirmation():
+    # Reproduces the reported bug: bot offers an approximation and asks
+    # "¿Eso es lo que necesitas?"; the user's "si" carries no retrievable
+    # content of its own and must resolve back to the question it confirms.
+    state = {
+        "messages": [
+            HumanMessage(content="¿Cuánto cuesta un examen de IGRA?"),
+            AIMessage(content="Quizá se refiera a un estudio de citología. ¿Eso es lo que necesitas?"),
+            HumanMessage(content="si"),
+        ]
+    }
+    assert _last_human_query(state) == "¿Cuánto cuesta un examen de IGRA?"
+
+
+@pytest.mark.parametrize("confirmation", ["si", "Sí", "SI", "claro", "dale", "ok", "correcto", "así es"])
+def test_last_human_query_recognizes_confirmation_variants(confirmation):
+    state = {
+        "messages": [
+            HumanMessage(content="precio de biopsia de mama"),
+            AIMessage(content="¿Eso es lo que necesitas?"),
+            HumanMessage(content=confirmation),
+        ]
+    }
+    assert _last_human_query(state) == "precio de biopsia de mama"
+
+
+def test_last_human_query_no_fallback_when_only_one_human_message():
+    # A bare "si" with no prior question to fall back to — nothing to resolve.
+    state = {"messages": [HumanMessage(content="si")]}
+    assert _last_human_query(state) == "si"
+
+
+def test_last_human_query_no_fallback_for_substantive_reply():
+    # Only exact bare confirmations trigger the fallback — a reply that adds
+    # real content (even if it starts similarly) must retrieve on itself.
+    state = {
+        "messages": [
+            HumanMessage(content="precio de biopsia de mama"),
+            AIMessage(content="¿Eso es lo que necesitas?"),
+            HumanMessage(content="si, la de mama derecha con marcaje"),
+        ]
+    }
+    assert _last_human_query(state) == "si, la de mama derecha con marcaje"
 
 
 # ---------------------------------------------------------------------------
@@ -512,24 +567,33 @@ async def _run_generate_with_chunks(base_state, chunks):
 
 
 @pytest.mark.asyncio
-async def test_generate_rag_context_includes_confidence_score(base_state):
+async def test_generate_rag_context_tags_low_similarity_as_approximation(base_state):
     chunks = [{"content": "Biopsia de ganglio linfático $120.00", "similarity": 0.402}]
     system_content = await _run_generate_with_chunks(base_state, chunks)
 
-    assert "0.40" in system_content
-    assert "confianza" in system_content
+    assert "APROXIMACIÓN" in system_content
+    assert "0.40" not in system_content
 
 
 @pytest.mark.asyncio
-async def test_generate_rag_prompt_states_mechanical_threshold(base_state):
-    """The 0.65 cutoff must be spelled out as a hard rule, not left to the
-    model's own judgment of what counts as an 'exact' match."""
+async def test_generate_rag_context_tags_high_similarity_as_exact(base_state):
+    chunks = [{"content": "Biopsia de ganglio linfático $120.00", "similarity": 0.9}]
+    system_content = await _run_generate_with_chunks(base_state, chunks)
+
+    assert "COINCIDENCIA EXACTA" in system_content
+
+
+@pytest.mark.asyncio
+async def test_generate_rag_prompt_forbids_recalculating_tag(base_state):
+    """The exact/approximate classification is precomputed in Python — the
+    prompt must tell the model to trust the tag, not recompute a threshold
+    itself (that arithmetic used to live in the prompt and was easy to ignore)."""
     system_content = await _run_generate_with_chunks(
         base_state, [{"content": "x", "similarity": 0.5}]
     )
 
-    assert "0.65" in system_content
-    assert "MECÁNICA" in system_content
+    assert "NO la recalcules" in system_content
+    assert "0.65" not in system_content
 
 
 @pytest.mark.asyncio

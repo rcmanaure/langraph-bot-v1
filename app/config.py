@@ -31,6 +31,13 @@ class Settings(BaseSettings):
     retrieval_max_tokens: int = 3000
     hnsw_ef_search: int = 160
     hnsw_iterative_scan: str = "relaxed_order"
+    exact_match_threshold: float = 0.65
+    # Hybrid search (dense + keyword, fused via RRF)
+    hybrid_candidate_k: int = 30
+    rrf_k: int = 60
+    # LLM-based reranking of hybrid-search candidates before generation
+    rerank_enabled: bool = True
+    rerank_candidate_k: int = 20
 
     # Channels
     telegram_bot_token: str = ""
@@ -56,6 +63,7 @@ class Settings(BaseSettings):
 
     # STT
     groq_api_key: str = ""
+    stt_language: str = "es"
 
     # App
     app_host: str = "0.0.0.0"

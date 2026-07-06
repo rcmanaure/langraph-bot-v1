@@ -17,6 +17,12 @@ def token_counter(msgs) -> int:
 
 
 async def retrieve_chunks(db: AsyncSession, query: str, namespace: str) -> list[dict]:
+    """Hybrid retrieval: dense (pgvector/HNSW) + keyword (tsvector), fused with
+    Reciprocal Rank Fusion. Dense embeddings alone miss exact-match queries
+    (item codes, exact names) that matter for a catalog bot — the keyword leg
+    covers those; RRF combines both without needing to normalize/compare
+    scores across the two different scales.
+    """
     query_vec = await get_embeddings().aembed_query(query)
 
     ef = settings.hnsw_ef_search
@@ -29,14 +35,51 @@ async def retrieve_chunks(db: AsyncSession, query: str, namespace: str) -> list[
 
     result = await db.execute(
         text("""
-            SELECT content, source, page,
-                   1 - (embedding <=> CAST(:qv AS vector)) AS similarity
-            FROM document_chunks
-            WHERE namespace = :ns AND embedding IS NOT NULL
-            ORDER BY embedding <=> CAST(:qv AS vector)
-            LIMIT :k
+            WITH vector_search AS (
+                SELECT id, content, source, page,
+                       1 - (embedding <=> CAST(:qv AS vector)) AS similarity,
+                       ROW_NUMBER() OVER (ORDER BY embedding <=> CAST(:qv AS vector)) AS rank
+                FROM document_chunks
+                WHERE namespace = :ns AND embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:qv AS vector)
+                LIMIT :cand_k
+            ),
+            text_search AS (
+                SELECT id, content, source, page,
+                       1 - (embedding <=> CAST(:qv AS vector)) AS similarity,
+                       ROW_NUMBER() OVER (
+                           ORDER BY ts_rank(content_tsv, websearch_to_tsquery('spanish', :q)) DESC
+                       ) AS rank
+                FROM document_chunks
+                WHERE namespace = :ns
+                  AND content_tsv @@ websearch_to_tsquery('spanish', :q)
+                LIMIT :cand_k
+            )
+            SELECT
+                COALESCE(v.content, t.content) AS content,
+                COALESCE(v.source, t.source) AS source,
+                COALESCE(v.page, t.page) AS page,
+                COALESCE(v.similarity, t.similarity) AS similarity,
+                COALESCE(1.0 / (:rrf_k + v.rank), 0.0)
+                    + COALESCE(1.0 / (:rrf_k + t.rank), 0.0) AS fused_score
+            FROM vector_search v
+            FULL OUTER JOIN text_search t ON v.id = t.id
+            ORDER BY fused_score DESC
+            LIMIT :top_k
         """),
-        {"qv": str(query_vec), "ns": namespace, "k": settings.top_k_results},
+        {
+            "qv": str(query_vec),
+            "q": query,
+            "ns": namespace,
+            "cand_k": settings.hybrid_candidate_k,
+            "rrf_k": settings.rrf_k,
+            # Over-fetch beyond top_k_results when reranking is enabled — the
+            # reranker needs a candidate pool to choose from, not just the
+            # final count. Harmless overfetch when reranking is off.
+            "top_k": max(settings.top_k_results, settings.rerank_candidate_k)
+            if settings.rerank_enabled
+            else settings.top_k_results,
+        },
     )
     rows = result.fetchall()
     chunks = [
