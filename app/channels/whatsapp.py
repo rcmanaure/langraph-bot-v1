@@ -322,8 +322,9 @@ async def _handle_message(
             logger.warning("wa_vision_uncertain tenant=%s from=%s", tenant_slug, from_id)
             await _send(
                 phone_number_id, access_token, from_id,
-                "No pude leer con seguridad el examen en la imagen. "
-                "¿Puedes escribirme el nombre del examen o procedimiento?",
+                "No pude leer con seguridad el examen en la imagen. Intenta con una foto "
+                "más clara: buena luz, enfocada, y que se vea toda la hoja. O si prefieres, "
+                "puedes escribirme el nombre del examen o procedimiento.",
             )
             return
         logger.warning("wa_vision_extracted tenant=%s query=%s", tenant_slug, procedure_query[:120])

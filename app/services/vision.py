@@ -1,12 +1,19 @@
+import asyncio
 import base64
+import hashlib
+import io
 import json
 import logging
 import re
 
+import openai
 from langchain_core.messages import HumanMessage
+from PIL import Image, ImageOps
 from pydantic import BaseModel
+from sqlalchemy import text
 
 from app.config import settings
+from app.db import AsyncSessionLocal
 from app.schemas.vision import VisionExtraction, VisionVerification
 from app.services.llm import get_vision_llm
 
@@ -68,6 +75,82 @@ def _strip_fences(content: str) -> str:
 # correctness dependency, and self-heals with one wasted probe.
 _structured_output_ok: dict[str, bool] = {}
 
+# High photo volume makes concurrent uploads far more likely to collide with
+# OpenRouter's per-model rate limit than a single request ever would — a 429
+# is transient (the request itself was fine, just mistimed), unlike a 400/404
+# capability failure, so it's worth a couple of short backoff retries instead
+# of giving up immediately and asking the user to retype their question.
+_RATE_LIMIT_MAX_RETRIES = 2
+_RATE_LIMIT_BASE_DELAY = 1.5  # seconds
+
+
+def _is_rate_limited(exc: BaseException) -> bool:
+    return isinstance(exc, openai.RateLimitError) or getattr(exc, "status_code", None) == 429
+
+
+async def _call_with_rate_limit_retry(fn, *args, **kwargs):
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            return await fn(*args, **kwargs)
+        except Exception as exc:
+            if not _is_rate_limited(exc) or attempt == _RATE_LIMIT_MAX_RETRIES:
+                raise
+            delay = _RATE_LIMIT_BASE_DELAY * (2**attempt)
+            logger.warning("vision_rate_limited attempt=%d retrying_in=%.1fs", attempt + 1, delay)
+            await asyncio.sleep(delay)
+
+
+# Phone photos routinely arrive at 3000-4000px on the long side, and/or
+# rotated via an EXIF orientation tag that most viewers apply automatically
+# but raw bytes don't — left as-is that's both a bloated base64 payload
+# (cost/latency) and a real risk of the model reading a sideways image wrong.
+_MAX_DIMENSION = 1600
+_JPEG_QUALITY = 85
+
+
+def _preprocess_image(img_bytes: bytes) -> bytes:
+    """Bake EXIF rotation into pixels and downscale oversized photos before
+    they're sent to the vision model. Falls back to the original bytes if
+    Pillow can't decode the input (unsupported format, corrupt file) rather
+    than failing the whole request over an optimization."""
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        if img.mode not in ("RGB", "L"):
+            img = img.convert("RGB")
+        if max(img.size) > _MAX_DIMENSION:
+            img.thumbnail((_MAX_DIMENSION, _MAX_DIMENSION), Image.Resampling.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
+        return buf.getvalue()
+    except Exception as exc:
+        logger.warning("vision_preprocess_failed err=%s using original bytes", exc)
+        return img_bytes
+
+
+def _vision_cache_key(model_name: str, caption: str, img_bytes: bytes) -> str:
+    h = hashlib.sha256()
+    h.update(f"{model_name}:{caption}:".encode())
+    h.update(img_bytes)
+    return h.hexdigest()
+
+
+async def _get_cached_vision_result(key: str) -> str | None:
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            text("SELECT result FROM vision_cache WHERE key = :key"), {"key": key}
+        )).first()
+        return row.result if row else None
+
+
+async def _store_vision_result(key: str, result: str) -> None:
+    async with AsyncSessionLocal() as db:
+        await db.execute(
+            text("INSERT INTO vision_cache (key, result) VALUES (:key, :result) ON CONFLICT (key) DO NOTHING"),
+            {"key": key, "result": result},
+        )
+        await db.commit()
+
 
 async def _structured_or_json(
     llm, model_name: str, prompt: str, img_b64: str, schema: type[BaseModel], json_suffix: str
@@ -84,6 +167,12 @@ async def _structured_or_json(
             _structured_output_ok[model_name] = True
             return result
         except Exception as exc:
+            if _is_rate_limited(exc):
+                # Transient — the model DOES support structured output, it's
+                # just rate-limited right now. Must not memoize this as a
+                # capability failure, or one busy moment permanently disables
+                # structured output for the model.
+                raise
             logger.warning("vision_structured_failed model=%s err=%s falling back to json parse", model_name, exc)
             _structured_output_ok[model_name] = False
 
@@ -114,37 +203,60 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
     Any failure at any stage — API error, malformed output, is_legible=false,
     or the second pass rejecting the claim — resolves to VISION_UNCERTAIN.
     The safe default here is "ask the user", never a guess.
+
+    Results are cached by hash(model, caption, image bytes) — the same photo
+    resent (users routinely retake/reforward the same order) skips straight to
+    the cached answer instead of re-paying two LLM calls. Only genuine content
+    judgments are cached (legible/not, verified/rejected, the extracted text);
+    API errors are never cached, since a retry might succeed once the
+    upstream recovers.
+
+    Each stage retries with backoff specifically on 429 (rate limited) —
+    a real chance under photo bursts — and fails fast on anything else.
+
+    The image is preprocessed first (EXIF rotation corrected, downscaled if
+    oversized) — see _preprocess_image.
     """
     if not settings.openai_vision_model:
         raise RuntimeError("OPENAI_VISION_MODEL not configured")
+
+    img_bytes = _preprocess_image(img_bytes)
+    model_name = settings.openai_vision_model
+    cache_key = _vision_cache_key(model_name, caption, img_bytes)
+    cached = await _get_cached_vision_result(cache_key)
+    if cached is not None:
+        logger.info("vision_cache_hit key=%s", cache_key[:12])
+        return cached
 
     llm = get_vision_llm()
     img_b64 = base64.b64encode(img_bytes).decode()
     prompt = f"{caption}\n\n{_VISION_EXTRACT_PROMPT}" if caption else _VISION_EXTRACT_PROMPT
 
-    model_name = settings.openai_vision_model
     try:
-        extraction: VisionExtraction = await _structured_or_json(
-            llm, model_name, prompt, img_b64, VisionExtraction, _EXTRACT_JSON_SUFFIX
+        extraction: VisionExtraction = await _call_with_rate_limit_retry(
+            _structured_or_json, llm, model_name, prompt, img_b64, VisionExtraction, _EXTRACT_JSON_SUFFIX
         )
     except Exception as exc:
         logger.warning("vision_extraction_failed=%s defaulting to uncertain", exc)
-        return VISION_UNCERTAIN
+        return VISION_UNCERTAIN  # transient — not cached, retry may succeed
 
     if not extraction.is_legible or not extraction.price_question:
+        await _store_vision_result(cache_key, VISION_UNCERTAIN)
         return VISION_UNCERTAIN
 
     verify_prompt = _VERIFY_PROMPT_TEMPLATE.format(claim=extraction.price_question)
     try:
-        verification: VisionVerification = await _structured_or_json(
-            llm, model_name, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX
+        verification: VisionVerification = await _call_with_rate_limit_retry(
+            _structured_or_json, llm, model_name, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX
         )
     except Exception as exc:
         logger.warning("vision_verification_failed=%s defaulting to uncertain", exc)
-        return VISION_UNCERTAIN
+        return VISION_UNCERTAIN  # transient — not cached, retry may succeed
 
     if not verification.text_visible:
         logger.warning("vision_verification_rejected claim=%s", extraction.price_question[:80])
+        await _store_vision_result(cache_key, VISION_UNCERTAIN)
         return VISION_UNCERTAIN
 
+    await _store_vision_result(cache_key, extraction.price_question)
     return extraction.price_question

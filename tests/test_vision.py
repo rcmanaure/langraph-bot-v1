@@ -2,13 +2,22 @@
 mocked, no network. Focused on the two-pass verification added after a live
 test showed the model fabricating a procedure name on a blank image instead
 of emitting the VISION_UNCERTAIN sentinel roughly half the time."""
+import io
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
+import openai
 import pytest
+from PIL import Image
 
 import app.services.vision as vision_module
 from app.schemas.vision import VisionExtraction, VisionVerification
 from app.services.vision import VISION_UNCERTAIN, extract_procedure_query
+
+
+def _rate_limit_error() -> openai.RateLimitError:
+    resp = httpx.Response(status_code=429, request=httpx.Request("POST", "https://example.test"))
+    return openai.RateLimitError("rate limited", response=resp, body=None)
 
 
 @pytest.fixture(autouse=True)
@@ -20,6 +29,28 @@ def reset_structured_output_cache():
     vision_module._structured_output_ok.clear()
     yield
     vision_module._structured_output_ok.clear()
+
+
+def _cache_ctx(cached_row=None):
+    session = MagicMock()
+    result = MagicMock()
+    result.first.return_value = cached_row
+    session.execute = AsyncMock(return_value=result)
+    session.commit = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+    return ctx, session
+
+
+@pytest.fixture(autouse=True)
+def mock_vision_cache():
+    """DB-backed vision result cache — defaults to always-miss so existing
+    tests exercise the LLM path without a real Postgres connection. Tests
+    that care about cache behavior override this via patch() directly."""
+    ctx, _ = _cache_ctx(None)
+    with patch("app.services.vision.AsyncSessionLocal", return_value=ctx):
+        yield
 
 
 def _mock_llm(by_schema: dict, raw_content_by_schema: dict | None = None):
@@ -220,6 +251,210 @@ async def test_memoized_structured_output_failure_skips_retry_on_next_call():
         # Second call must NOT retry the doomed structured attempt.
         assert mock_llm.with_structured_output.call_count == 1
         assert mock_llm.ainvoke.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_hit_returns_cached_result_without_calling_llm():
+    """Same photo resent (hash matches) → cached result returned, zero LLM calls."""
+    ctx, session = _cache_ctx(cached_row=MagicMock(result="¿Cuánto cuesta una biopsia?"))
+    mock_llm = MagicMock()
+    mock_llm.with_structured_output = MagicMock(side_effect=AssertionError("must not call LLM on cache hit"))
+
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == "¿Cuánto cuesta una biopsia?"
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_stores_extracted_result():
+    """A fresh (uncached) image, once extracted+verified, is written to the cache."""
+    ctx, session = _cache_ctx(cached_row=None)
+    mock_llm = _mock_llm({
+        VisionExtraction: VisionExtraction(is_legible=True, price_question="¿Cuánto cuesta un examen de IGRA?"),
+        VisionVerification: VisionVerification(text_visible=True),
+    })
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == "¿Cuánto cuesta un examen de IGRA?"
+    insert_call = session.execute.await_args_list[-1]
+    assert "INSERT INTO vision_cache" in str(insert_call.args[0])
+    assert insert_call.args[1]["result"] == "¿Cuánto cuesta un examen de IGRA?"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cache_miss_stores_uncertain_when_illegible():
+    """An illegible image's VISION_UNCERTAIN verdict is itself a stable content
+    judgment worth caching — same blank/blurry photo resent shouldn't re-pay."""
+    ctx, session = _cache_ctx(cached_row=None)
+    mock_llm = _mock_llm({VisionExtraction: VisionExtraction(is_legible=False, price_question=None)})
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+    insert_call = session.execute.await_args_list[-1]
+    assert insert_call.args[1]["result"] == VISION_UNCERTAIN
+
+
+@pytest.mark.asyncio
+async def test_transient_extraction_failure_is_not_cached():
+    """API errors are transient — must NOT be cached, or a temporary outage
+    would permanently lock a legit image as uncertain."""
+    ctx, session = _cache_ctx(cached_row=None)
+    mock_llm = _mock_llm(
+        by_schema={VisionExtraction: Exception("api down")},
+        raw_content_by_schema={VisionExtraction: "not json at all, just prose"},
+    )
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+    insert_calls = [c for c in session.execute.await_args_list if "INSERT" in str(c.args[0])]
+    assert insert_calls == []
+
+
+def test_cache_key_differs_by_model_caption_and_bytes():
+    key_a = vision_module._vision_cache_key("model-a", "", b"img1")
+    key_b = vision_module._vision_cache_key("model-b", "", b"img1")
+    key_c = vision_module._vision_cache_key("model-a", "caption", b"img1")
+    key_d = vision_module._vision_cache_key("model-a", "", b"img2")
+    assert len({key_a, key_b, key_c, key_d}) == 4
+
+
+@pytest.mark.asyncio
+async def test_rate_limited_structured_call_retries_then_succeeds():
+    """429 on the first structured attempt → retried with backoff, succeeds
+    on the second try. Backoff sleep is patched away so the test is instant."""
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(
+        side_effect=[_rate_limit_error(), VisionExtraction(is_legible=False, price_question=None)]
+    )
+    mock_llm = MagicMock()
+    mock_llm.with_structured_output = MagicMock(return_value=mock_structured)
+
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+    assert mock_structured.ainvoke.await_count == 2
+    # A 429 is transient, not a capability failure — must not have memoized
+    # "structured output doesn't work" for this model.
+    assert vision_module._structured_output_ok.get("some-vision-model") is True
+
+
+@pytest.mark.asyncio
+async def test_rate_limit_exhausted_defaults_to_uncertain_not_cached():
+    """429 on every retry → gives up, returns VISION_UNCERTAIN, doesn't cache
+    (a still-rate-limited model might succeed moments later)."""
+    ctx, session = _cache_ctx(cached_row=None)
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=_rate_limit_error())
+    mock_llm = MagicMock()
+    mock_llm.with_structured_output = MagicMock(return_value=mock_structured)
+
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+        patch("app.services.vision.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+    # 1 initial attempt + 2 retries = 3 total, per _RATE_LIMIT_MAX_RETRIES
+    assert mock_structured.ainvoke.await_count == 3
+    insert_calls = [c for c in session.execute.await_args_list if "INSERT" in str(c.args[0])]
+    assert insert_calls == []
+
+
+@pytest.mark.asyncio
+async def test_non_rate_limit_error_is_not_retried():
+    """A plain capability failure (not a 429) must fail fast — no backoff
+    delay wasted on an error retrying can't fix."""
+    mock_structured = AsyncMock()
+    mock_structured.ainvoke = AsyncMock(side_effect=Exception("no tool calling"))
+    mock_llm = MagicMock()
+    mock_llm.with_structured_output = MagicMock(return_value=mock_structured)
+    raw_resp = MagicMock()
+    raw_resp.content = '{"is_legible": false, "price_question": null}'
+    mock_llm.ainvoke = AsyncMock(return_value=raw_resp)
+
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+    # Falls back to json-mode after a single failed attempt — no retry loop.
+    assert mock_structured.ainvoke.await_count == 1
+
+
+def test_preprocess_downscales_oversized_image():
+    """Phone photos routinely exceed the model's useful resolution — must be
+    shrunk to cap payload size/cost without needing the full original."""
+    img = Image.new("RGB", (3000, 1500), color="green")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+
+    processed = vision_module._preprocess_image(buf.getvalue())
+    out = Image.open(io.BytesIO(processed))
+    assert max(out.size) <= vision_module._MAX_DIMENSION
+    assert out.size[0] / out.size[1] == pytest.approx(3000 / 1500, rel=0.01)
+
+
+def test_preprocess_corrects_exif_rotation():
+    """EXIF orientation tag rotates on display but not in raw pixel data —
+    left uncorrected, the model reads a sideways image."""
+    img = Image.new("RGB", (200, 100), color="blue")  # landscape, unrotated
+    exif = img.getexif()
+    exif[0x0112] = 6  # "rotate 90 CW to display correctly" -> portrait
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif)
+
+    processed = vision_module._preprocess_image(buf.getvalue())
+    out = Image.open(io.BytesIO(processed))
+    assert out.size == (100, 200)  # rotation baked into pixels
+
+
+def test_preprocess_small_image_untouched_dimensions():
+    """An already-small image isn't upscaled or otherwise distorted."""
+    img = Image.new("RGB", (400, 300), color="red")
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG")
+
+    processed = vision_module._preprocess_image(buf.getvalue())
+    out = Image.open(io.BytesIO(processed))
+    assert out.size == (400, 300)
+
+
+def test_preprocess_falls_back_to_original_on_invalid_image():
+    """Undecodable input (corrupt file, unsupported format) must not crash
+    the request — falls back to the original bytes."""
+    raw = b"this is not a valid image file"
+    assert vision_module._preprocess_image(raw) == raw
 
 
 @pytest.mark.asyncio

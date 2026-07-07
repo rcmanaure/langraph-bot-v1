@@ -7,6 +7,7 @@ Known bugs surfaced here (marked with BUG):
   - _send() network error propagates as 500 instead of 200
   - Graph returning empty answer + empty messages → sends empty string to user
 """
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -48,11 +49,27 @@ def photo_update(file_id="p1", caption="", chat_id=100, user_id=42):
                         "photo": [{"file_id": file_id, "file_size": 1024}]}}
 
 
+def photo_group_update(file_id, media_group_id, caption="", chat_id=100, user_id=42):
+    return {"message": {"chat": {"id": chat_id}, "from": {"id": user_id}, "caption": caption,
+                        "media_group_id": media_group_id,
+                        "photo": [{"file_id": file_id, "file_size": 1024}]}}
+
+
 def edited_update(text="edited text", chat_id=100, user_id=42):
     return {"edited_message": {"chat": {"id": chat_id}, "from": {"id": user_id}, "text": text}}
 
 
 # ── Shared fixtures ───────────────────────────────────────────────────────────
+
+@pytest.fixture(autouse=True)
+def reset_media_groups():
+    """_MEDIA_GROUPS is module-level state — must reset between tests or a
+    group buffered in one test could leak into an unrelated later test."""
+    from app.channels.telegram import _MEDIA_GROUPS
+    _MEDIA_GROUPS.clear()
+    yield
+    _MEDIA_GROUPS.clear()
+
 
 @pytest.fixture()
 def mock_graph():
@@ -636,3 +653,98 @@ async def test_photo_extraction_failure_sends_error(mock_db, mock_http, mock_gra
     send_msg = next((c for c in send_calls if "sendMessage" in str(c)), None)
     assert send_msg is not None
     assert "No pude procesar la imagen" in str(send_msg)
+
+
+@pytest.mark.asyncio
+async def test_photo_over_10mb_sends_size_error(mock_db, mock_http, mock_graph):
+    """Photo > 10 MB → rejected before download, no graph call. Regression test:
+    this branch used to skip the size check that voice/audio already had."""
+    with patch("app.channels.telegram.settings.openai_vision_model", "vision-model"):
+        app = make_app(mock_graph)
+        payload = photo_update()
+        payload["message"]["photo"][0]["file_size"] = 11 * 1024 * 1024
+        r = await _post(app, payload)
+    assert r.status_code == 200
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    error_call = next((c for c in send_calls if "sendMessage" in str(c)), None)
+    assert error_call is not None
+    assert "10MB" in str(error_call)
+
+
+# ── 9. Photo albums (media_group_id) ──────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_media_group_photos_combined_into_single_graph_call(mock_db, mock_http, mock_graph):
+    """Telegram album (shared media_group_id) arrives as separate updates —
+    must be buffered and forwarded as ONE combined graph turn, not N disconnected
+    replies."""
+    queries = iter(["¿Cuánto cuesta un examen de IGRA?", "¿Cuánto cuesta una biopsia?"])
+
+    async def fake_extract(img_bytes, caption):
+        return next(queries)
+
+    with (
+        patch("app.channels.telegram.settings.openai_vision_model", "vision-model"),
+        patch("app.channels.telegram._MEDIA_GROUP_DEBOUNCE", 0.05),
+        patch("app.channels.telegram._download_file", new_callable=AsyncMock, return_value=b"img"),
+        patch("app.channels.telegram._extract_procedure_query", side_effect=fake_extract),
+    ):
+        app = make_app(mock_graph)
+        r1 = await _post(app, photo_group_update("p1", "grp1"))
+        r2 = await _post(app, photo_group_update("p2", "grp1"))
+        assert r1.status_code == 200 and r2.status_code == 200
+        # Neither individual update triggers the graph — only the flush does.
+        mock_graph.ainvoke.assert_not_awaited()
+        await asyncio.sleep(0.3)
+
+    mock_graph.ainvoke.assert_awaited_once()
+    call_input = mock_graph.ainvoke.call_args[0][0]
+    content = call_input["messages"][0].content
+    assert "IGRA" in content
+    assert "biopsia" in content
+
+
+@pytest.mark.asyncio
+async def test_media_group_all_uncertain_sends_single_message(mock_db, mock_http, mock_graph):
+    """Every photo in the album is illegible → one combined "can't read" message,
+    not one per photo."""
+    from app.channels.telegram import _VISION_UNCERTAIN
+
+    with (
+        patch("app.channels.telegram.settings.openai_vision_model", "vision-model"),
+        patch("app.channels.telegram._MEDIA_GROUP_DEBOUNCE", 0.05),
+        patch("app.channels.telegram._download_file", new_callable=AsyncMock, return_value=b"img"),
+        patch("app.channels.telegram._extract_procedure_query", new_callable=AsyncMock,
+              return_value=_VISION_UNCERTAIN),
+    ):
+        app = make_app(mock_graph)
+        await _post(app, photo_group_update("p1", "grp2"))
+        await _post(app, photo_group_update("p2", "grp2"))
+        await asyncio.sleep(0.3)
+
+    mock_graph.ainvoke.assert_not_awaited()
+    send_calls = mock_http.post.call_args_list
+    send_msgs = [c for c in send_calls if "sendMessage" in str(c)]
+    assert len(send_msgs) == 1
+    assert "escrib" in str(send_msgs[0]).lower()
+
+
+@pytest.mark.asyncio
+async def test_different_media_groups_not_mixed(mock_db, mock_http, mock_graph):
+    """Two distinct albums arriving close together must not merge into one turn."""
+    async def fake_extract(img_bytes, caption):
+        return "¿Cuánto cuesta un examen X?"
+
+    with (
+        patch("app.channels.telegram.settings.openai_vision_model", "vision-model"),
+        patch("app.channels.telegram._MEDIA_GROUP_DEBOUNCE", 0.05),
+        patch("app.channels.telegram._download_file", new_callable=AsyncMock, return_value=b"img"),
+        patch("app.channels.telegram._extract_procedure_query", side_effect=fake_extract),
+    ):
+        app = make_app(mock_graph)
+        await _post(app, photo_group_update("p1", "grp-a"))
+        await _post(app, photo_group_update("p2", "grp-b"))
+        await asyncio.sleep(0.3)
+
+    assert mock_graph.ainvoke.await_count == 2
