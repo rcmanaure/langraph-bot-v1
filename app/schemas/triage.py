@@ -4,4 +4,4 @@ from pydantic import BaseModel
 
 
 class TriageDecision(BaseModel):
-    decision: Literal["rag", "catalog", "human", "off_topic"]
+    decision: Literal["rag", "catalog", "human", "off_topic", "greeting"]

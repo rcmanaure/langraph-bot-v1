@@ -27,16 +27,20 @@ _GENERATE_RETRY = RetryPolicy(max_attempts=2)
 
 
 def _route_after_validate(state: AgentState) -> str:
-    return "respond" if state.get("blocked") else "retrieve"
+    return "respond" if state.get("blocked") else "triage"
 
 
 def _route_triage(state: AgentState) -> str:
+    # retrieve()+rerank_chunks() are LLM/DB round trips that only pay off when
+    # generate() actually reads retrieved_chunks — off_topic/greeting return a
+    # canned reply without looking at chunks, and human hands off before
+    # generate() runs at all, so those three skip straight past retrieve.
     d = state.get("triage_decision", "rag")
-    if d in ("rag", "catalog", "off_topic"):
-        return "generate"
     if d == "human":
         return "interrupt_node"
-    return "generate"
+    if d in ("off_topic", "greeting"):
+        return "generate"
+    return "retrieve"  # "rag" or "catalog"
 
 
 def build_graph(checkpointer=None, store=None):
@@ -64,14 +68,14 @@ def build_graph(checkpointer=None, store=None):
     g.add_conditional_edges(
         "validate",
         _route_after_validate,
-        {"retrieve": "retrieve", "respond": "respond"},
+        {"triage": "triage", "respond": "respond"},
     )
-    g.add_edge("retrieve", "triage")
     g.add_conditional_edges(
         "triage",
         _route_triage,
-        {"generate": "generate", "interrupt_node": "interrupt_node", "respond": "respond"},
+        {"retrieve": "retrieve", "generate": "generate", "interrupt_node": "interrupt_node"},
     )
+    g.add_edge("retrieve", "generate")
     g.add_edge("generate", "validate_output")
     g.add_edge("validate_output", "respond")
     g.add_edge("interrupt_node", "respond")

@@ -10,24 +10,29 @@ def test_route_after_validate_blocked(base_state):
 
 
 def test_route_after_validate_clean(base_state):
-    assert _route_after_validate(base_state) == "retrieve"
+    assert _route_after_validate(base_state) == "triage"
 
 
 @pytest.mark.parametrize("decision,expected", [
-    ("rag", "generate"),
-    ("catalog", "generate"),
+    ("rag", "retrieve"),
+    ("catalog", "retrieve"),
     ("human", "interrupt_node"),
     ("off_topic", "generate"),
+    ("greeting", "generate"),
 ])
 def test_route_triage(base_state, decision, expected):
+    """rag/catalog need retrieved_chunks, so they route through retrieve.
+    human hands off before generate() runs. off_topic/greeting return a
+    canned reply without ever reading chunks, so they skip retrieve (and
+    its LLM-backed rerank call) entirely — see _route_triage's comment."""
     base_state["triage_decision"] = decision
     assert _route_triage(base_state) == expected
 
 
 def test_route_triage_missing_defaults_to_rag(base_state):
-    # no triage_decision key → defaults to "rag" → "generate"
+    # no triage_decision key → defaults to "rag" → "retrieve"
     del base_state["triage_decision"]
-    assert _route_triage(base_state) == "generate"
+    assert _route_triage(base_state) == "retrieve"
 
 
 def test_build_graph_compiles():

@@ -57,6 +57,8 @@ Catálogo:
 
 _OFF_TOPIC_MSG = "Lo siento, no puedo ayudarte con eso. Soy un asistente especializado en {expertise}."
 
+_GREETING_MSG = "¡Hola! 👋 Gracias por escribirnos. Somos especialistas en {expertise}. ¿En qué podemos ayudarte hoy?"
+
 _FALLBACK = "Lo siento, no pude procesar tu consulta en este momento. Por favor intenta de nuevo."
 
 
@@ -99,6 +101,16 @@ async def generate(state: AgentState, runtime: Runtime | None = None) -> dict:
 
     if decision == "off_topic":
         content = _OFF_TOPIC_MSG.format(**tenant_ctx)
+        msg = AIMessage(content=content)
+        return {"answer": content, "messages": [msg]}
+
+    if decision == "greeting":
+        # Static reply — a bare greeting has no question to answer, so this
+        # skips the LLM call entirely (not just the retrieve/rerank stage the
+        # router already skips for this decision). Cuts a ~40s round trip
+        # (retrieve+rerank+triage+generate, all sequential) down to just the
+        # triage call needed to classify the message in the first place.
+        content = _GREETING_MSG.format(**tenant_ctx)
         msg = AIMessage(content=content)
         return {"answer": content, "messages": [msg]}
 
