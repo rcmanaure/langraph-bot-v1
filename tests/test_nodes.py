@@ -597,6 +597,25 @@ async def test_generate_rag_prompt_forbids_recalculating_tag(base_state):
 
 
 @pytest.mark.asyncio
+async def test_generate_rag_prompt_keeps_hedge_after_positive_confirmation(base_state):
+    """Regression test: a real conversation showed the model correctly hedging
+    on the FIRST approximate-match offer ("lo más cercano que tenemos... ¿es
+    lo que necesitas?"), but after the user confirmed "sí", the second turn
+    dropped the hedge entirely and renamed the generic catalog item to match
+    the user's specific wording — presenting an approximation with false
+    confidence and false specificity. The prompt must instruct the model to
+    keep the catalog's exact item name and the "closest match" caveat even
+    after a positive confirmation, not just on the first offer."""
+    system_content = await _run_generate_with_chunks(
+        base_state, [{"content": "x", "similarity": 0.5}]
+    )
+
+    assert "CONFIRMA que sí" in system_content
+    assert "nombre EXACTO del ítem" in system_content
+    assert "nunca lo renombres" in system_content
+
+
+@pytest.mark.asyncio
 async def test_generate_catalog_context_omits_confidence_score(base_state):
     """Catalog listing shows everything regardless of match quality — no
     per-item confidence noise in that prompt."""
