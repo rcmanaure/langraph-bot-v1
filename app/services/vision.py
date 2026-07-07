@@ -150,12 +150,17 @@ async def _get_cached_vision_result(key: str) -> str | None:
 
 
 async def _store_vision_result(key: str, result: str) -> None:
-    async with AsyncSessionLocal() as db:
-        await db.execute(
-            text("INSERT INTO vision_cache (key, result) VALUES (:key, :result) ON CONFLICT (key) DO NOTHING"),
-            {"key": key, "result": result},
-        )
-        await db.commit()
+    """Best-effort: a cache WRITE failure must never discard an already-computed
+    (and already-paid-for) correct result — log and move on."""
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                text("INSERT INTO vision_cache (key, result) VALUES (:key, :result) ON CONFLICT (key) DO NOTHING"),
+                {"key": key, "result": result},
+            )
+            await db.commit()
+    except Exception as exc:
+        logger.warning("vision_cache_write_failed key=%s err=%s", key[:12], exc)
 
 
 async def _structured_or_json(
@@ -240,7 +245,11 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
     img_bytes = _preprocess_image(img_bytes)
     model_name = settings.openai_vision_model
     cache_key = _vision_cache_key(model_name, caption, img_bytes)
-    cached = await _get_cached_vision_result(cache_key)
+    try:
+        cached = await _get_cached_vision_result(cache_key)
+    except Exception as exc:
+        logger.warning("vision_cache_read_failed err=%s treating as cache miss", exc)
+        cached = None
     if cached is not None:
         logger.info("vision_cache_hit key=%s", cache_key[:12])
         return cached

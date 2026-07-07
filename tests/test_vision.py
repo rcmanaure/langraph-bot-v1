@@ -353,6 +353,63 @@ async def test_cache_hit_returns_cached_result_without_calling_llm():
 
 
 @pytest.mark.asyncio
+async def test_cache_read_failure_falls_through_to_fresh_extraction():
+    """A DB hiccup on the cache READ must not crash the request — treated as
+    a cache miss so the LLM path still runs and returns a real answer."""
+    broken_session = MagicMock()
+    broken_session.execute = AsyncMock(side_effect=Exception("db connection lost"))
+    broken_ctx = AsyncMock()
+    broken_ctx.__aenter__ = AsyncMock(return_value=broken_session)
+    broken_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    good_ctx, good_session = _cache_ctx(cached_row=None)
+
+    ctx_calls = iter([broken_ctx, good_ctx, good_ctx])  # read fails, then writes succeed
+
+    mock_llm = _mock_llm({
+        VisionExtraction: VisionExtraction(is_legible=True, procedure_name="IGRA",
+                                            price_question="¿Cuánto cuesta un examen de IGRA?"),
+        VisionVerification: VisionVerification(text_visible=True),
+    })
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", side_effect=lambda: next(ctx_calls)),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == "¿Cuánto cuesta un examen de IGRA?"
+
+
+@pytest.mark.asyncio
+async def test_cache_write_failure_still_returns_correct_result():
+    """A DB hiccup on the cache WRITE must not discard an already-computed,
+    already-paid-for correct extraction — the failure is swallowed and logged."""
+    broken_session = MagicMock()
+    broken_session.execute = AsyncMock(side_effect=Exception("db connection lost"))
+    broken_ctx = AsyncMock()
+    broken_ctx.__aenter__ = AsyncMock(return_value=broken_session)
+    broken_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    read_ctx, _ = _cache_ctx(cached_row=None)
+    ctx_calls = iter([read_ctx, broken_ctx])  # read succeeds (miss), write fails
+
+    mock_llm = _mock_llm({
+        VisionExtraction: VisionExtraction(is_legible=True, procedure_name="IGRA",
+                                            price_question="¿Cuánto cuesta un examen de IGRA?"),
+        VisionVerification: VisionVerification(text_visible=True),
+    })
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", side_effect=lambda: next(ctx_calls)),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == "¿Cuánto cuesta un examen de IGRA?"
+
+
+@pytest.mark.asyncio
 async def test_cache_miss_stores_extracted_result():
     """A fresh (uncached) image, once extracted+verified, is written to the cache."""
     ctx, session = _cache_ctx(cached_row=None)
