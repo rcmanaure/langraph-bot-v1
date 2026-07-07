@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Chat LLM — routed through OpenRouter
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openai_model: str = "openrouter/free"
+    openai_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     openai_fallback_model: str = "deepseek/deepseek-v4-flash"
 
     # Embeddings — same key/base as chat; override only if using a different provider
