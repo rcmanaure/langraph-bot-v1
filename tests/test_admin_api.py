@@ -308,6 +308,76 @@ async def test_create_index_job_valid_returns_202_with_job_id():
     UUID(body["job_id"])  # raises if not valid
 
 
+@pytest.mark.asyncio
+async def test_create_index_job_replace_all_flag_passed_to_indexer():
+    """replace_all=true must reach run_index_job — it widens the stale-chunk
+    delete from "this filename only" to "the whole tenant", used when
+    replacing an entire catalog with a new source file/format."""
+    app = make_app()
+
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=0)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_run_index_job = AsyncMock()
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx), \
+         patch("app.routes.admin.run_index_job", mock_run_index_job), \
+         patch("app.routes.admin.asyncio.create_task"):
+        r = await _request(
+            app, "post", "/admin/index",
+            data={"tenant_slug": "demo", "replace_all": "true"},
+            files={"file": ("catalog.md", b"# new catalog", "text/markdown")},
+        )
+    assert r.status_code == 200
+    mock_run_index_job.assert_called_once()
+    assert mock_run_index_job.call_args.kwargs["replace_all"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_index_job_replace_all_defaults_to_false():
+    """Omitting replace_all must preserve the existing safe default —
+    additive-by-filename, so unrelated documents for the same tenant survive."""
+    app = make_app()
+
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=0)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_run_index_job = AsyncMock()
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx), \
+         patch("app.routes.admin.run_index_job", mock_run_index_job), \
+         patch("app.routes.admin.asyncio.create_task"):
+        r = await _request(
+            app, "post", "/admin/index",
+            data={"tenant_slug": "demo"},
+            files={"file": ("doc.pdf", b"%PDF content", "application/pdf")},
+        )
+    assert r.status_code == 200
+    assert mock_run_index_job.call_args.kwargs["replace_all"] is False
+
+
 # ── GET /admin/index/{job_id} ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio

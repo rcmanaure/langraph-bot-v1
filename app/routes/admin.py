@@ -361,6 +361,7 @@ async def delete_chunks(
 async def create_index_job(
     tenant_slug: str = Form(...),
     file: UploadFile = File(...),
+    replace_all: bool = Form(False),
     _: None = Depends(verify_operator_key),
 ):
     content = await file.read()
@@ -406,6 +407,7 @@ async def create_index_job(
             filename=file.filename or "upload",
             tenant_id=tenant_id,
             namespace=tenant_slug,
+            replace_all=replace_all,
         )
     )
     _bg_tasks.add(task)

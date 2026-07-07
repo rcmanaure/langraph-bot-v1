@@ -166,6 +166,7 @@ async def run_index_job(
     filename: str,
     tenant_id: int,
     namespace: str,
+    replace_all: bool = False,
 ) -> None:
     async with AsyncSessionLocal() as db:
         job = await db.get(IndexJob, job_id)
@@ -176,22 +177,32 @@ async def run_index_job(
         await db.commit()
 
     try:
-        # Replace-on-re-upload: delete stale chunks for this filename before
-        # inserting new ones so the namespace stays clean without manual cleanup.
-        # Covers both plain source ("file.md") and JSONL keyed sources ("file.jsonl:ID").
+        # Replace-on-re-upload: delete stale chunks before inserting new ones
+        # so the namespace stays clean without manual cleanup. Default scope
+        # is this filename only (plain "file.md" or JSONL-keyed "file.jsonl:ID"),
+        # so unrelated documents for the same tenant are untouched. replace_all
+        # widens this to the whole tenant — e.g. when replacing an entire
+        # catalog with a new source file/format.
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                text("""
-                    DELETE FROM document_chunks
-                     WHERE tenant_id = :tid
-                       AND (source = :src OR source LIKE :prefix)
-                """),
-                {"tid": tenant_id, "src": filename, "prefix": f"{filename}:%"},
-            )
+            if replace_all:
+                result = await db.execute(
+                    text("DELETE FROM document_chunks WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            else:
+                result = await db.execute(
+                    text("""
+                        DELETE FROM document_chunks
+                         WHERE tenant_id = :tid
+                           AND (source = :src OR source LIKE :prefix)
+                    """),
+                    {"tid": tenant_id, "src": filename, "prefix": f"{filename}:%"},
+                )
             replaced = result.rowcount
             await db.commit()
         if replaced:
-            logger.info("index_replaced_stale job=%s filename=%s deleted=%d", job_id, filename, replaced)
+            logger.info("index_replaced_stale job=%s filename=%s deleted=%d replace_all=%s",
+                         job_id, filename, replaced, replace_all)
 
         if filename.lower().endswith(".jsonl"):
             all_chunks, org_meta = _extract_jsonl_chunks(content, filename)

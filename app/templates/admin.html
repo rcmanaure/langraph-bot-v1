@@ -594,6 +594,15 @@
               Re-uploading a file with the same name replaces its previous embeddings automatically.
             </p>
 
+            <!-- Replace-all-for-tenant option -->
+            <label class="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 cursor-pointer">
+              <input type="checkbox" x-model="up.replaceAll" class="mt-0.5">
+              <span class="text-xs text-amber-800">
+                <span class="font-medium">Replace ALL documents for this tenant.</span>
+                Deletes every previously indexed chunk (any filename) before indexing this upload — not just files with the same name. Use for a full catalog replacement.
+              </span>
+            </label>
+
             <!-- Progress -->
             <div x-show="up.jobId" class="rounded-xl border border-gray-200 bg-gray-50 p-4">
               <div class="flex items-center justify-between mb-2">
@@ -822,7 +831,7 @@
         deleteError: '',
 
         // ── Upload ──
-        up: { tenant:'', file:null, dragging:false, loading:false, uploadErr:'', jobId:null, status:'', pct:0, total:0, done:0, err:'' },
+        up: { tenant:'', file:null, dragging:false, replaceAll:false, loading:false, uploadErr:'', jobId:null, status:'', pct:0, total:0, done:0, err:'' },
 
         // ── Chunk files ──
         chunksTenant: '',
@@ -1151,6 +1160,7 @@
           const fd = new FormData()
           fd.append('tenant_slug', this.up.tenant)
           fd.append('file', this.up.file)
+          fd.append('replace_all', this.up.replaceAll ? 'true' : 'false')
           try {
             const r = await fetch('/admin/index', { method:'POST', headers: this._h(), body: fd })
             const data = await r.json()
