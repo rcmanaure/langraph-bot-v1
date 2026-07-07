@@ -143,6 +143,88 @@ async def test_extract_returns_uncertain_when_verification_rejects_the_claim():
 
 
 @pytest.mark.asyncio
+async def test_verification_checks_bare_procedure_name_not_full_question():
+    """Regression test: a live A/B test found verifying the full formatted
+    question ("¿Cuánto cuesta un examen de IGRA?") against the image fails
+    almost always (0/10 trials) because that sentence never literally
+    appears in the source document — only the bare term ("IGRA") does (6/8
+    trials passed). The verification prompt must be built from
+    procedure_name, not price_question."""
+    captured_prompts = []
+
+    def _with_structured_output(schema):
+        m = AsyncMock()
+        if schema is VisionExtraction:
+            m.ainvoke = AsyncMock(return_value=VisionExtraction(
+                is_legible=True, procedure_name="IGRA", price_question="¿Cuánto cuesta un examen de IGRA?"
+            ))
+        else:
+            async def _capture(messages):
+                captured_prompts.append(messages[0].content[0]["text"])
+                return VisionVerification(text_visible=True)
+            m.ainvoke = _capture
+        return m
+
+    mock_llm = MagicMock()
+    mock_llm.with_structured_output.side_effect = _with_structured_output
+
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == "¿Cuánto cuesta un examen de IGRA?"
+    assert len(captured_prompts) == 1
+    assert '"IGRA"' in captured_prompts[0]
+    assert "¿Cuánto cuesta" not in captured_prompts[0]
+
+
+@pytest.mark.asyncio
+async def test_verification_falls_back_to_price_question_when_procedure_name_missing():
+    """Defensive fallback: if the model doesn't populate procedure_name
+    (e.g. an older/malformed response), verification still has something to
+    check rather than crashing on a None claim."""
+    mock_llm = _mock_llm({
+        VisionExtraction: VisionExtraction(is_legible=True, procedure_name=None,
+                                            price_question="¿Cuánto cuesta un examen de IGRA?"),
+        VisionVerification: VisionVerification(text_visible=True),
+    })
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == "¿Cuánto cuesta un examen de IGRA?"
+
+
+@pytest.mark.asyncio
+async def test_verification_rejection_is_not_cached():
+    """Regression test: verification outcomes are proven stochastic (same
+    image+claim flips between accept/reject across independent calls — see
+    docstring). Caching a rejection would turn one unlucky roll into a
+    permanent wrong answer for that exact photo. Only is_legible=false and
+    successful verifications may be cached."""
+    ctx, session = _cache_ctx(cached_row=None)
+    mock_llm = _mock_llm({
+        VisionExtraction: VisionExtraction(is_legible=True, procedure_name="IGRA",
+                                            price_question="¿Cuánto cuesta un examen de IGRA?"),
+        VisionVerification: VisionVerification(text_visible=False),
+    })
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+    insert_calls = [c for c in session.execute.await_args_list if "INSERT" in str(c.args[0])]
+    assert insert_calls == [], "a rejected verification must never be cached"
+
+
+@pytest.mark.asyncio
 async def test_extract_falls_back_to_json_parse_when_extraction_structured_fails():
     """Once extraction's structured attempt fails for a model, the memo means
     verification (same model, same call) also skips straight to the JSON

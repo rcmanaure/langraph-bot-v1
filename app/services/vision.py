@@ -29,17 +29,23 @@ Analiza esta imagen médica (orden de examen, informe, o solicitud de biopsia).
 Marca is_legible=true SOLO si podés leer con certeza el nombre del procedimiento o \
 examen escrito en la imagen, letra por letra. Si el texto está borroso, cortado, \
 hay varios exámenes distintos y no sabés cuál se pregunta, o tenés la MÍNIMA duda \
-sobre qué dice — marcá is_legible=false y dejá price_question vacío. NUNCA adivines \
-ni asumas un examen "parecido" solo porque el contexto médico te resulte familiar.
+sobre qué dice — marcá is_legible=false y dejá procedure_name y price_question \
+vacíos. NUNCA adivines ni asumas un examen "parecido" solo porque el contexto \
+médico te resulte familiar.
 
-Si is_legible=true, escribí en price_question una pregunta de precio en español \
-usando el texto EXACTO que leíste en la imagen, por ejemplo: "¿Cuánto cuesta un \
-examen de IGRA?" o "¿Cuál es el precio de una resección de tumor de mama?". No \
-traduzcas a un sinónimo clínico ni asumas qué examen "similar" podría ser.
+Si is_legible=true, completá dos campos:
+- procedure_name: el nombre EXACTO y LITERAL del procedimiento o examen tal como \
+está escrito en la imagen, sin agregar palabras (ejemplo: "IGRA", "resección de \
+tumor de mama").
+- price_question: una pregunta de precio en español usando ese mismo texto, por \
+ejemplo: "¿Cuánto cuesta un examen de IGRA?" o "¿Cuál es el precio de una resección \
+de tumor de mama?". No traduzcas a un sinónimo clínico ni asumas qué examen \
+"similar" podría ser.
 """
 
 _EXTRACT_JSON_SUFFIX = (
-    '\nReply ONLY with JSON: {"is_legible": <true|false>, "price_question": <string or null>}'
+    '\nReply ONLY with JSON: {"is_legible": <true|false>, '
+    '"procedure_name": <string or null>, "price_question": <string or null>}'
 )
 
 _VERIFY_PROMPT_TEMPLATE = """\
@@ -199,6 +205,13 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
        trustworthy on its own. So a second, independent call re-examines the
        SAME image and is asked to specifically confirm or reject the first
        call's claimed text, rather than just re-stating confidence in it.
+       This second pass verifies extraction.procedure_name — the bare literal
+       term (e.g. "IGRA") — NOT price_question (the formatted customer-facing
+       question, e.g. "¿Cuánto cuesta un examen de IGRA?"). A live A/B test
+       found verifying the full formatted question fails almost always (0/10
+       trials on a clearly legible image) because that sentence never
+       literally appears in the source document — only the bare term does
+       (6/8 trials passed when verifying the bare term instead).
 
     Any failure at any stage — API error, malformed output, is_legible=false,
     or the second pass rejecting the claim — resolves to VISION_UNCERTAIN.
@@ -206,10 +219,14 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
 
     Results are cached by hash(model, caption, image bytes) — the same photo
     resent (users routinely retake/reforward the same order) skips straight to
-    the cached answer instead of re-paying two LLM calls. Only genuine content
-    judgments are cached (legible/not, verified/rejected, the extracted text);
-    API errors are never cached, since a retry might succeed once the
-    upstream recovers.
+    the cached answer instead of re-paying two LLM calls. Only stable content
+    judgments are cached: is_legible=false, and a verified extraction. A
+    verification REJECTION is deliberately never cached — the same live A/B
+    test showed identical (image, claim) pairs flip between accepted/rejected
+    across independent calls, so caching one bad roll would make it a
+    permanent wrong answer for that exact photo instead of a fresh roll on
+    the next resend. API errors are never cached either, since a retry might
+    succeed once the upstream recovers.
 
     Each stage retries with backoff specifically on 429 (rate limited) —
     a real chance under photo bursts — and fails fast on anything else.
@@ -244,7 +261,10 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
         await _store_vision_result(cache_key, VISION_UNCERTAIN)
         return VISION_UNCERTAIN
 
-    verify_prompt = _VERIFY_PROMPT_TEMPLATE.format(claim=extraction.price_question)
+    # Verify the bare literal term, not the formatted question — a document
+    # never contains the full interrogative sentence, only the term itself.
+    verify_claim = extraction.procedure_name or extraction.price_question
+    verify_prompt = _VERIFY_PROMPT_TEMPLATE.format(claim=verify_claim)
     try:
         verification: VisionVerification = await _call_with_rate_limit_retry(
             _structured_or_json, llm, model_name, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX
@@ -254,8 +274,9 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
         return VISION_UNCERTAIN  # transient — not cached, retry may succeed
 
     if not verification.text_visible:
-        logger.warning("vision_verification_rejected claim=%s", extraction.price_question[:80])
-        await _store_vision_result(cache_key, VISION_UNCERTAIN)
+        logger.warning("vision_verification_rejected claim=%s", verify_claim[:80])
+        # Deliberately NOT cached — proven stochastic (see docstring); one
+        # unlucky roll must not become a permanent wrong answer.
         return VISION_UNCERTAIN
 
     await _store_vision_result(cache_key, extraction.price_question)

@@ -3,7 +3,8 @@ from pydantic import BaseModel
 
 class VisionExtraction(BaseModel):
     is_legible: bool
-    price_question: str | None = None
+    procedure_name: str | None = None  # bare literal term as written, e.g. "IGRA" — verified against this
+    price_question: str | None = None  # customer-facing formatted question, e.g. "¿Cuánto cuesta un examen de IGRA?"
 
 
 class VisionVerification(BaseModel):
