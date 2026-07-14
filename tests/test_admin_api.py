@@ -308,6 +308,146 @@ async def test_create_index_job_valid_returns_202_with_job_id():
     UUID(body["job_id"])  # raises if not valid
 
 
+@pytest.mark.asyncio
+async def test_create_index_job_replace_all_flag_passed_to_indexer():
+    """replace_all=true must reach run_index_job — it widens the stale-chunk
+    delete from "this filename only" to "the whole tenant", used when
+    replacing an entire catalog with a new source file/format."""
+    app = make_app()
+
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=0)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_run_index_job = AsyncMock()
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx), \
+         patch("app.routes.admin.run_index_job", mock_run_index_job), \
+         patch("app.routes.admin.asyncio.create_task"):
+        r = await _request(
+            app, "post", "/admin/index",
+            data={"tenant_slug": "demo", "replace_all": "true"},
+            files={"file": ("catalog.md", b"# new catalog", "text/markdown")},
+        )
+    assert r.status_code == 200
+    mock_run_index_job.assert_called_once()
+    assert mock_run_index_job.call_args.kwargs["replace_all"] is True
+
+
+@pytest.mark.asyncio
+async def test_create_index_job_replace_all_defaults_to_false():
+    """Omitting replace_all must preserve the existing safe default —
+    additive-by-filename, so unrelated documents for the same tenant survive."""
+    app = make_app()
+
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=0)
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_run_index_job = AsyncMock()
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx), \
+         patch("app.routes.admin.run_index_job", mock_run_index_job), \
+         patch("app.routes.admin.asyncio.create_task"):
+        r = await _request(
+            app, "post", "/admin/index",
+            data={"tenant_slug": "demo"},
+            files={"file": ("doc.pdf", b"%PDF content", "application/pdf")},
+        )
+    assert r.status_code == 200
+    assert mock_run_index_job.call_args.kwargs["replace_all"] is False
+
+
+@pytest.mark.asyncio
+async def test_create_index_job_counts_active_chunks_not_historical_jobs():
+    """Regression test: doc_count must come from distinct document_chunks
+    sources, not COUNT(*) of historical index_jobs. replace_all deletes stale
+    document_chunks rows on re-upload but never touches old index_jobs rows —
+    counting jobs would count every past re-upload attempt against the plan
+    limit forever, permanently locking out a tenant who iterates on their
+    catalog more than `docs` times even though only one document is active."""
+    app = make_app()
+
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=1)  # 1 active document
+    session.add = MagicMock()
+    session.commit = AsyncMock()
+    session.refresh = AsyncMock()
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx), \
+         patch("app.routes.admin.run_index_job", new_callable=AsyncMock), \
+         patch("app.routes.admin.asyncio.create_task"):
+        r = await _request(
+            app, "post", "/admin/index",
+            data={"tenant_slug": "demo", "replace_all": "true"},
+            files={"file": ("catalog_v2.jsonl", b'{"id":"a"}', "application/json")},
+        )
+
+    assert r.status_code == 200
+    sql_text = str(session.scalar.call_args[0][0])
+    assert "document_chunks" in sql_text
+    assert "split_part" in sql_text
+    assert "index_jobs" not in sql_text
+
+
+@pytest.mark.asyncio
+async def test_create_index_job_still_blocks_when_five_distinct_documents_active():
+    """The fix must not accidentally disable the limit entirely — 5 distinct
+    active documents on the free plan must still return 429."""
+    app = make_app()
+
+    import uuid as _uuid
+    tenant_row = (str(_uuid.uuid4()), "free")
+    tenant_result = MagicMock()
+    tenant_result.first.return_value = tenant_row
+
+    session = AsyncMock()
+    session.execute = AsyncMock(return_value=tenant_result)
+    session.scalar = AsyncMock(return_value=5)  # at the free-plan limit
+    ctx = AsyncMock()
+    ctx.__aenter__ = AsyncMock(return_value=session)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("app.routes.admin.AsyncSessionLocal", return_value=ctx):
+        r = await _request(
+            app, "post", "/admin/index",
+            data={"tenant_slug": "demo"},
+            files={"file": ("doc6.pdf", b"%PDF content", "application/pdf")},
+        )
+
+    assert r.status_code == 429
+    assert "Document limit (5) reached" in r.json()["detail"]
+
+
 # ── GET /admin/index/{job_id} ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
@@ -450,3 +590,9 @@ async def test_get_billing_returns_plan_usage():
     assert "limits" in body
     assert "usage_percent" in body
     assert body["limits"]["documents"]["max"] == 20  # Basic limit
+
+    # Same regression guard as create_index_job: billing must report active
+    # documents (document_chunks), not historical index_jobs.
+    doc_count_sql = str(session.scalar.call_args_list[0][0][0])
+    assert "document_chunks" in doc_count_sql
+    assert "index_jobs" not in doc_count_sql

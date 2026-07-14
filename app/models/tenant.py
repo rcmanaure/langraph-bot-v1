@@ -24,8 +24,8 @@ class Tenant(Base):
 
     # WhatsApp
     wa_phone_number_id = Column(String(100), nullable=True)
-    _wa_access_token = Column("wa_access_token", String(500), nullable=True)
-    _wa_app_secret = Column("wa_app_secret", String(100), nullable=True)
+    _wa_access_token = Column("wa_access_token", Text, nullable=True)
+    _wa_app_secret = Column("wa_app_secret", Text, nullable=True)
     wa_verify_token = Column(String(100), nullable=True)
     channels = Column(Text, nullable=True, server_default="telegram")
 

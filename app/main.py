@@ -78,28 +78,14 @@ async def _cleanup_stuck_jobs() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.runtime import build_runtime
     from app.scheduler import start as start_scheduler
     from app.scheduler import stop as stop_scheduler
 
     await _cleanup_stuck_jobs()
 
-    from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-    from psycopg_pool import AsyncConnectionPool
-
-    # psycopg3 needs plain postgresql:// (not +asyncpg)
-    pg_url = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)
-
-    async with AsyncConnectionPool(
-        conninfo=pg_url,
-        max_size=settings.db_checkpoint_pool_size,
-        kwargs={"autocommit": True},
-    ) as pool:
-        checkpointer = AsyncPostgresSaver(pool)
-        await checkpointer.setup()
-
-        from app.graph.builder import build_graph
-
-        app.state.graph = build_graph(checkpointer=checkpointer)
+    async with build_runtime() as runtime:
+        app.state.graph = runtime.graph
         start_scheduler()
         logger.info("langgraph_ready")
         yield

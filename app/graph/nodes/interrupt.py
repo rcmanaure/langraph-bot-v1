@@ -8,17 +8,10 @@ from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
 from app.db import AsyncSessionLocal
+from app.graph.thread import parse_thread_part
 from app.state import AgentState
 
 logger = logging.getLogger(__name__)
-
-
-def _parse_part(thread_id: str, key: str) -> str:
-    parts = thread_id.split(":")
-    try:
-        return parts[parts.index(key) + 1]
-    except (ValueError, IndexError):
-        return "unknown"
 
 
 async def interrupt_node(state: AgentState) -> dict:
@@ -59,8 +52,8 @@ async def interrupt_node(state: AgentState) -> dict:
                         {
                             "id": str(uuid.uuid4()),
                             "thread": thread_id,
-                            "user_id": _parse_part(thread_id, "user"),
-                            "channel": _parse_part(thread_id, "channel"),
+                            "user_id": parse_thread_part(thread_id, "user"),
+                            "channel": parse_thread_part(thread_id, "channel"),
                             "now": datetime.now(timezone.utc),
                             "slug": state["tenant_id"],
                         },

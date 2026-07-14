@@ -1,6 +1,7 @@
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from app.config import settings
+from app.services.embedding_cache import CachedEmbeddings
 
 
 def get_chat_llm(fallback: bool = False) -> ChatOpenAI:
@@ -14,10 +15,30 @@ def get_chat_llm(fallback: bool = False) -> ChatOpenAI:
     )
 
 
-def get_embeddings() -> OpenAIEmbeddings:
-    return OpenAIEmbeddings(
+def get_vision_llm() -> ChatOpenAI:
+    return ChatOpenAI(
+        model=settings.openai_vision_model,
+        api_key=settings.openrouter_api_key,
+        base_url=settings.openrouter_base_url,
+        default_headers={"HTTP-Referer": f"https://{settings.app_domain}"},
+        timeout=60,
+    )
+
+
+def get_openrouter_headers() -> dict:
+    """Auth + referer headers for raw HTTP calls to OpenRouter endpoints that
+    aren't chat-completions (e.g. /rerank) and so can't go through ChatOpenAI."""
+    return {
+        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "HTTP-Referer": f"https://{settings.app_domain}",
+    }
+
+
+def get_embeddings() -> CachedEmbeddings:
+    underlying = OpenAIEmbeddings(
         model=settings.embedding_model,
         api_key=settings.effective_embedding_api_key,
         base_url=settings.effective_embedding_base_url,
         dimensions=settings.embedding_dim,
     )
+    return CachedEmbeddings(underlying)

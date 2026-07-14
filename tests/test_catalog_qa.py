@@ -353,6 +353,24 @@ async def test_off_topic_no_llm_called():
 
 
 @pytest.mark.asyncio
+async def test_greeting_no_llm_called():
+    """Triage greeting → generate devuelve saludo estándar SIN llamar al LLM.
+    Root cause of a real ~40s latency complaint for "hola": retrieve+rerank+
+    generate all ran as sequential LLM calls for a message with no question
+    to answer. This is the fix's final leg — generate() itself must skip the
+    LLM too, not just the retrieve/rerank stage the router already skips."""
+    state = _make_state([], triage_decision="greeting", user_text="hola")
+    llm = _mock_llm("irrelevante")
+
+    with patch("app.graph.nodes.generate._load_tenant", AsyncMock(return_value=TENANT_CTX)), \
+         patch("app.graph.nodes.generate.get_chat_llm", return_value=llm):
+        result = await generate(state)
+
+    llm.ainvoke.assert_not_called()
+    assert "hola" in result["answer"].lower()
+
+
+@pytest.mark.asyncio
 async def test_laboratorio_clinico_is_off_topic_triage():
     """Hemograma/química sanguínea → triage debe clasificar off_topic (no lo realizamos)."""
     state = _make_state([], user_text="cuánto cuesta un hemograma completo")

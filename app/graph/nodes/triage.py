@@ -14,16 +14,19 @@ logger = logging.getLogger(__name__)
 
 _TRIAGE_PROMPT = """\
 Classify the user's latest message into ONE category:
+- "greeting": ONLY a greeting, thanks, farewell, or social pleasantry with NO question about products/services/prices at all
 - "rag": ANY question about a product, service, price, exam, procedure, study, biopsy, analysis, cost, or anything the business might offer — even if vague
 - "catalog": explicitly wants a FULL list/catalog/ALL products or services
 - "human": explicitly asks to speak with a human, operator, or agent
 - "off_topic": ONLY if completely unrelated (politics, weather, sports, jokes, coding questions)
 
-IMPORTANT: Medical terms, body parts, lab tests, procedures, and prices are ALWAYS "rag".
+IMPORTANT: Medical terms, body parts, lab tests, procedures, and prices are ALWAYS "rag" —
+never "greeting", even if the message opens with "hola" first.
+Examples of "greeting": "hola", "buenas", "gracias", "buen día", "hasta luego"
 Examples of "rag": "biopsia de pulmon", "cuanto cuesta", "riñon", "análisis de sangre", "histología"
 Examples of "off_topic": "quien ganó el partido", "como programo en python", "chiste"
 
-When in doubt → "rag". Default is "rag".
+When in doubt between rag/off_topic → "rag". Default is "rag".
 Reply ONLY with JSON: {"decision": "<category>"}
 """
 

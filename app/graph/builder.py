@@ -4,10 +4,12 @@ from langgraph.types import CachePolicy, RetryPolicy
 
 from app.graph.nodes.generate import generate
 from app.graph.nodes.interrupt import interrupt_node
+from app.graph.nodes.prune_history import prune_history
 from app.graph.nodes.respond import respond
 from app.graph.nodes.retrieve import cache_key as retrieve_cache_key
 from app.graph.nodes.retrieve import retrieve
 from app.graph.nodes.triage import triage
+from app.graph.nodes.update_profile import update_profile
 from app.graph.nodes.validate import validate
 from app.graph.nodes.validate_output import validate_output
 from app.state import AgentState
@@ -25,19 +27,23 @@ _GENERATE_RETRY = RetryPolicy(max_attempts=2)
 
 
 def _route_after_validate(state: AgentState) -> str:
-    return "respond" if state.get("blocked") else "retrieve"
+    return "respond" if state.get("blocked") else "triage"
 
 
 def _route_triage(state: AgentState) -> str:
+    # retrieve()+rerank_chunks() are LLM/DB round trips that only pay off when
+    # generate() actually reads retrieved_chunks — off_topic/greeting return a
+    # canned reply without looking at chunks, and human hands off before
+    # generate() runs at all, so those three skip straight past retrieve.
     d = state.get("triage_decision", "rag")
-    if d in ("rag", "catalog", "off_topic"):
-        return "generate"
     if d == "human":
         return "interrupt_node"
-    return "generate"
+    if d in ("off_topic", "greeting"):
+        return "generate"
+    return "retrieve"  # "rag" or "catalog"
 
 
-def build_graph(checkpointer=None):
+def build_graph(checkpointer=None, store=None):
     g = StateGraph(AgentState)
 
     g.add_node("validate", validate)
@@ -55,22 +61,31 @@ def build_graph(checkpointer=None):
     g.add_node("validate_output", validate_output)
     g.add_node("interrupt_node", interrupt_node)
     g.add_node("respond", respond)
+    g.add_node("update_profile", update_profile)
+    g.add_node("prune_history", prune_history)
 
     g.add_edge(START, "validate")
     g.add_conditional_edges(
         "validate",
         _route_after_validate,
-        {"retrieve": "retrieve", "respond": "respond"},
+        {"triage": "triage", "respond": "respond"},
     )
-    g.add_edge("retrieve", "triage")
     g.add_conditional_edges(
         "triage",
         _route_triage,
-        {"generate": "generate", "interrupt_node": "interrupt_node", "respond": "respond"},
+        {"retrieve": "retrieve", "generate": "generate", "interrupt_node": "interrupt_node"},
     )
+    g.add_edge("retrieve", "generate")
     g.add_edge("generate", "validate_output")
     g.add_edge("validate_output", "respond")
     g.add_edge("interrupt_node", "respond")
-    g.add_edge("respond", END)
+    # update_profile/prune_history run after every path into respond (including
+    # the blocked and human-escalation shortcuts) — the profile should capture
+    # escalations too, and messages grow regardless of which branch replied.
+    # update_profile must run before prune_history: it reads recent messages
+    # to extract the profile update, which prune_history may then discard.
+    g.add_edge("respond", "update_profile")
+    g.add_edge("update_profile", "prune_history")
+    g.add_edge("prune_history", END)
 
-    return g.compile(checkpointer=checkpointer, cache=InMemoryCache())
+    return g.compile(checkpointer=checkpointer, store=store, cache=InMemoryCache())

@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     # Chat LLM — routed through OpenRouter
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
-    openai_model: str = "openrouter/free"
+    openai_model: str = "nvidia/nemotron-3-super-120b-a12b:free"
     openai_fallback_model: str = "deepseek/deepseek-v4-flash"
 
     # Embeddings — same key/base as chat; override only if using a different provider
@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     retrieval_max_tokens: int = 3000
     hnsw_ef_search: int = 160
     hnsw_iterative_scan: str = "relaxed_order"
+    exact_match_threshold: float = 0.65
+    # Hybrid search (dense + keyword, fused via RRF)
+    hybrid_candidate_k: int = 30
+    rrf_k: int = 60
+    # Cross-encoder reranking of hybrid-search candidates before generation
+    rerank_enabled: bool = True
+    rerank_candidate_k: int = 20
+    rerank_model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
 
     # Channels
     telegram_bot_token: str = ""
@@ -56,6 +64,7 @@ class Settings(BaseSettings):
 
     # STT
     groq_api_key: str = ""
+    stt_language: str = "es"
 
     # App
     app_host: str = "0.0.0.0"

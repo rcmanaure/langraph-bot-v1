@@ -1,7 +1,8 @@
-import base64
+import asyncio
 import hmac
 import logging
 import re
+import time
 from collections import OrderedDict
 
 import httpx
@@ -12,22 +13,27 @@ from sqlalchemy import text
 from app.channels.base import ChannelEvent
 from app.config import settings
 from app.db import AsyncSessionLocal
+from app.services.vision import MAX_MEDIA_BYTES as MAX_VOICE_BYTES
+from app.services.vision import VISION_UNCERTAIN as _VISION_UNCERTAIN
+from app.services.vision import extract_procedure_query as _extract_procedure_query
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/webhook", tags=["telegram"])
 
-MAX_VOICE_BYTES = 10 * 1024 * 1024  # 10 MB
-
-# Dedup cache: update_id → True. Bounded to 1000 entries (LRU).
-_SEEN_UPDATES: OrderedDict[int, bool] = OrderedDict()
+# Dedup cache: "tenant_slug:update_id" → True. Bounded to 1000 entries (LRU).
+# update_id is sequential PER BOT, not globally unique — two tenants can emit
+# the same update_id, so the key must include tenant_slug or one tenant's
+# message gets silently dropped as a "duplicate" of another tenant's.
+_SEEN_UPDATES: OrderedDict[str, bool] = OrderedDict()
 _SEEN_MAX = 1000
 
 
-def _is_duplicate(update_id: int) -> bool:
-    if update_id in _SEEN_UPDATES:
+def _is_duplicate(tenant_slug: str, update_id: int) -> bool:
+    key = f"{tenant_slug}:{update_id}"
+    if key in _SEEN_UPDATES:
         return True
-    _SEEN_UPDATES[update_id] = True
+    _SEEN_UPDATES[key] = True
     if len(_SEEN_UPDATES) > _SEEN_MAX:
         _SEEN_UPDATES.popitem(last=False)
     return False
@@ -103,39 +109,114 @@ async def _download_file(token: str, file_id: str) -> bytes:
         return (await c.get(f"https://api.telegram.org/file/bot{token}/{file_path}")).content
 
 
-_VISION_EXTRACT_PROMPT = (
-    "Analiza esta imagen médica. Extrae el procedimiento o examen solicitado y "
-    "formula una pregunta de precio en español. "
-    "Responde ÚNICAMENTE con la pregunta, por ejemplo: "
-    "'¿Cuánto cuesta una biopsia de pericardio?' o '¿Cuál es el precio de una resección de tumor de mama?'. "
-    "Sin explicaciones adicionales."
-)
+# Telegram distinguishes three voice-ish message types: "voice" (voice note),
+# "audio" (uploaded audio file — real mime_type varies), "video_note" (round
+# video message — Whisper accepts mp4). Fixed filename/mime for the first and
+# last; "audio" reports its own mime_type in the payload.
+_AUDIO_MSG_TYPES = ("voice", "audio", "video_note")
+_FIXED_AUDIO_FORMAT = {"voice": ("voice.ogg", "audio/ogg"), "video_note": ("video_note.mp4", "video/mp4")}
 
 
-async def _extract_procedure_query(img_bytes: bytes, caption: str) -> str:
-    if not settings.openai_vision_model:
-        raise RuntimeError("OPENAI_VISION_MODEL not configured")
-    prompt = f"{caption}\n\n{_VISION_EXTRACT_PROMPT}" if caption else _VISION_EXTRACT_PROMPT
-    img_b64 = base64.b64encode(img_bytes).decode()
-    async with httpx.AsyncClient(timeout=60) as c:
-        r = await c.post(
-            f"{settings.openrouter_base_url}/chat/completions",
-            headers={"Authorization": f"Bearer {settings.openrouter_api_key}"},
-            json={
-                "model": settings.openai_vision_model,
-                "messages": [{
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                    ],
-                }],
-            },
+def _audio_filename_and_mime(msg_type: str, media: dict) -> tuple[str, str]:
+    if msg_type in _FIXED_AUDIO_FORMAT:
+        return _FIXED_AUDIO_FORMAT[msg_type]
+    mime = media.get("mime_type") or "audio/mpeg"
+    ext = mime.split("/")[-1] if "/" in mime else "mp3"
+    return f"audio.{ext}", mime
+
+
+# Telegram albums (multi-photo messages) arrive as separate webhook updates
+# sharing the same media_group_id, with no flag marking the last one — a
+# multi-page medical order sent as an album would otherwise trigger one
+# disconnected graph turn per photo instead of a single combined query.
+# Buffer by group_id and flush after a debounce window with no new arrivals.
+# Safe as in-process state: entrypoint.sh pins --workers 1 (see app/runtime.py).
+_MEDIA_GROUP_DEBOUNCE = 1.5
+_MEDIA_GROUPS: dict[str, dict] = {}
+
+
+async def _reply_to_event(bot_token: str, event: ChannelEvent, app_state) -> None:
+    graph = getattr(app_state, "graph", None)
+    if graph is None:
+        logger.error("tg_graph_not_initialized thread=%s", event.thread_id)
+        try:
+            await _send(bot_token, event.chat_id, "Lo siento, el servicio no está disponible. Por favor intenta de nuevo más tarde.")
+        except Exception:
+            pass
+        return
+
+    try:
+        result = await graph.ainvoke(
+            {"tenant_id": event.tenant_slug, "thread_id": event.thread_id,
+             "messages": [HumanMessage(content=event.text)], "answer": ""},
+            config={"configurable": {"thread_id": event.thread_id}},
         )
-    if r.status_code != 200:
-        logger.warning("tg_vision_api_failed status=%d body=%s", r.status_code, r.text[:200])
-        raise RuntimeError(f"Vision API returned {r.status_code}")
-    return r.json()["choices"][0]["message"]["content"].strip()
+        response = result.get("answer") or ""
+        if not response and result.get("messages"):
+            response = result["messages"][-1].content
+        if not response:
+            response = "Lo siento, no pude generar una respuesta."
+    except Exception:
+        logger.exception("tg_graph_failed thread=%s", event.thread_id)
+        response = "Lo siento, ocurrió un error. Por favor intenta de nuevo."
+
+    try:
+        await _send(bot_token, event.chat_id, response)
+    except Exception as exc:
+        logger.warning("tg_final_send_failed chat=%s type=%s err=%s",
+                       event.chat_id, type(response).__name__, exc, exc_info=True)
+
+
+async def _process_media_group(group_id: str, tenant_slug: str, bot_token: str, app_state) -> None:
+    """Debounce window: waits for the group to go quiet, then extracts every
+    buffered photo and merges the confident reads into one graph turn."""
+    while True:
+        await asyncio.sleep(_MEDIA_GROUP_DEBOUNCE)
+        group = _MEDIA_GROUPS.get(group_id)
+        if not group:
+            return
+        if time.monotonic() - group["last_seen"] < _MEDIA_GROUP_DEBOUNCE:
+            continue
+        _MEDIA_GROUPS.pop(group_id, None)
+        break
+
+    chat_id = group["chat_id"]
+    user_id = group["user_id"]
+    caption = group["caption"]
+
+    queries: list[str] = []
+    for photo in group["photos"]:
+        if photo.get("file_size", 0) > MAX_VOICE_BYTES:
+            continue
+        try:
+            img_bytes = await _download_file(bot_token, photo["file_id"])
+            procedure_query = await _extract_procedure_query(img_bytes, caption)
+        except Exception as exc:
+            logger.warning("tg_vision_group_failed user=%s err=%s", user_id, exc)
+            continue
+        if _VISION_UNCERTAIN not in procedure_query:
+            queries.append(procedure_query)
+
+    if not queries:
+        logger.warning("tg_vision_group_uncertain tenant=%s user=%s count=%d",
+                        tenant_slug, user_id, len(group["photos"]))
+        await _send(
+            bot_token, chat_id,
+            "No pude leer con seguridad los exámenes en las imágenes. Intenta con fotos "
+            "más claras: buena luz, enfocadas, y que se vea toda la hoja. O si prefieres, "
+            "puedes escribirme el nombre del examen o procedimiento.",
+        )
+        return
+
+    combined_query = queries[0] if len(queries) == 1 else "\n".join(f"- {q}" for q in queries)
+    logger.warning("tg_vision_group_extracted tenant=%s count=%d", tenant_slug, len(queries))
+    event = ChannelEvent(
+        tenant_slug=tenant_slug, channel="telegram",
+        user_id=user_id, chat_id=str(chat_id),
+        text=combined_query,
+        thread_id=f"tenant:{tenant_slug}:user:{user_id}:channel:telegram",
+    )
+    await _reply_to_event(bot_token, event, app_state)
 
 
 class TelegramAdapter:
@@ -153,7 +234,7 @@ class TelegramAdapter:
 
     async def normalize(self, body: dict) -> ChannelEvent | None:
         msg = body.get("message") or body.get("edited_message")
-        if not msg or "voice" in msg:
+        if not msg or any(k in msg for k in _AUDIO_MSG_TYPES):
             return None
         text = msg.get("text", "").strip()
         if not text:
@@ -189,19 +270,40 @@ async def _process_update(
     user_id = str((msg.get("from") or {}).get("id", "unknown"))
     adapter = TelegramAdapter(tenant_slug, bot_token, webhook_secret)
 
-    if "voice" in msg:
-        voice = msg["voice"]
-        if voice.get("file_size", 0) > MAX_VOICE_BYTES:
+    # Feedback immediately, before any download/STT/vision work — those can
+    # take several seconds and the user should see a signal right away.
+    try:
+        async with httpx.AsyncClient(timeout=5) as c:
+            await c.post(
+                f"https://api.telegram.org/bot{bot_token}/sendChatAction",
+                json={"chat_id": chat_id, "action": "typing"},
+            )
+    except Exception:
+        pass
+
+    audio_type = next((t for t in _AUDIO_MSG_TYPES if t in msg), None)
+    if audio_type:
+        media = msg[audio_type]
+        if media.get("file_size", 0) > MAX_VOICE_BYTES:
             await _send(bot_token, chat_id, "Archivo de voz demasiado grande (máx 10MB).")
             return
+        filename, mime_type = _audio_filename_and_mime(audio_type, media)
+        from app.services.stt import STTNotConfiguredError, transcribe
         try:
-            audio = await _download_file(bot_token, voice["file_id"])
-            from app.services.stt import transcribe
-            text_content = await transcribe(audio, "voice.ogg")
+            audio = await _download_file(bot_token, media["file_id"])
+            text_content = await transcribe(audio, filename, mime_type)
+        except STTNotConfiguredError:
+            logger.error("tg_stt_not_configured tenant=%s user=%s", tenant_slug, user_id)
+            await _send(bot_token, chat_id, "La transcripción de audio no está habilitada.")
+            return
         except Exception as exc:
             logger.warning("tg_stt_failed user=%s err=%s", user_id, exc)
+            await _send(bot_token, chat_id,
+                        "No pude procesar tu nota de voz. ¿Puedes escribirme tu consulta?")
             return
         if not text_content:
+            await _send(bot_token, chat_id,
+                        "No escuché nada en el audio. ¿Puedes repetirlo o escribirme?")
             return
         event = ChannelEvent(
             tenant_slug=tenant_slug, channel="telegram",
@@ -214,6 +316,22 @@ async def _process_update(
             await _send(bot_token, chat_id, "El análisis de imágenes no está habilitado.")
             return
         photo = msg["photo"][-1]  # largest resolution
+        media_group_id = msg.get("media_group_id")
+        if media_group_id:
+            group = _MEDIA_GROUPS.get(media_group_id)
+            if group is None:
+                group = {"photos": [], "caption": "", "chat_id": chat_id, "user_id": user_id,
+                          "last_seen": time.monotonic()}
+                _MEDIA_GROUPS[media_group_id] = group
+                asyncio.create_task(_process_media_group(media_group_id, tenant_slug, bot_token, app_state))
+            group["photos"].append(photo)
+            if msg.get("caption"):
+                group["caption"] = msg["caption"]
+            group["last_seen"] = time.monotonic()
+            return
+        if photo.get("file_size", 0) > MAX_VOICE_BYTES:
+            await _send(bot_token, chat_id, "Imagen demasiado grande (máx 10MB).")
+            return
         caption = msg.get("caption", "")
         try:
             img_bytes = await _download_file(bot_token, photo["file_id"])
@@ -221,6 +339,18 @@ async def _process_update(
         except Exception as exc:
             logger.warning("tg_vision_failed user=%s err=%s", user_id, exc)
             await _send(bot_token, chat_id, "No pude procesar la imagen. Por favor intenta de nuevo.")
+            return
+        if _VISION_UNCERTAIN in procedure_query:
+            # Don't guess and forward an uncertain read into the RAG pipeline —
+            # a wrong procedure name there looks just like a confident, correct
+            # answer downstream. Ask the user to type it instead.
+            logger.warning("tg_vision_uncertain tenant=%s user=%s", tenant_slug, user_id)
+            await _send(
+                bot_token, chat_id,
+                "No pude leer con seguridad el examen en la imagen. Intenta con una foto "
+                "más clara: buena luz, enfocada, y que se vea toda la hoja. O si prefieres, "
+                "puedes escribirme el nombre del examen o procedimiento.",
+            )
             return
         logger.warning("tg_vision_extracted tenant=%s query=%s", tenant_slug, procedure_query[:120])
         event = ChannelEvent(
@@ -234,44 +364,7 @@ async def _process_update(
         if not event:
             return
 
-    graph = getattr(app_state, "graph", None)
-    if graph is None:
-        logger.error("tg_graph_not_initialized thread=%s", event.thread_id)
-        try:
-            await adapter.send(event, "Lo siento, el servicio no está disponible. Por favor intenta de nuevo más tarde.")
-        except Exception:
-            pass
-        return
-
-    try:
-        async with httpx.AsyncClient(timeout=5) as c:
-            await c.post(
-                f"https://api.telegram.org/bot{bot_token}/sendChatAction",
-                json={"chat_id": event.chat_id, "action": "typing"},
-            )
-    except Exception:
-        pass
-
-    try:
-        result = await graph.ainvoke(
-            {"tenant_id": tenant_slug, "thread_id": event.thread_id,
-             "messages": [HumanMessage(content=event.text)], "answer": ""},
-            config={"configurable": {"thread_id": event.thread_id}},
-        )
-        response = result.get("answer") or ""
-        if not response and result.get("messages"):
-            response = result["messages"][-1].content
-        if not response:
-            response = "Lo siento, no pude generar una respuesta."
-    except Exception:
-        logger.exception("tg_graph_failed thread=%s", event.thread_id)
-        response = "Lo siento, ocurrió un error. Por favor intenta de nuevo."
-
-    try:
-        await adapter.send(event, response)
-    except Exception as exc:
-        logger.warning("tg_final_send_failed chat=%s type=%s err=%s",
-                       event.chat_id, type(response).__name__, exc, exc_info=True)
+    await _reply_to_event(bot_token, event, app_state)
 
 
 @router.post("/telegram/{tenant_slug}")
@@ -299,7 +392,7 @@ async def telegram_webhook(
     body = await request.json()
 
     update_id = body.get("update_id")
-    if update_id is not None and _is_duplicate(update_id):
+    if update_id is not None and _is_duplicate(tenant_slug, update_id):
         logger.info("tg_duplicate_update update_id=%s tenant=%s", update_id, tenant_slug)
         return {"ok": True}
 

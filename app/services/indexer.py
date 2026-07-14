@@ -30,20 +30,31 @@ def _chunk_page(text: str, source: str, page: int) -> list[dict]:
     size, overlap = settings.chunk_size, settings.chunk_overlap
     paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 50]
     merged, current = [], ""
+
+    def _tail(chunk: str) -> str:
+        # chunk_overlap is only honored inside the oversized-paragraph split
+        # below (a fixed-stride sliding window) — every other chunk boundary
+        # (the common case: paragraphs merged up to `size`) used to start the
+        # next chunk from scratch, silently dropping the configured overlap
+        # at every split point. Carry the tail of the just-finalized chunk
+        # forward so continuity holds at every boundary, not just that one.
+        return chunk[-overlap:] if overlap > 0 else ""
+
     for para in paragraphs:
         if len(para) > size:
             if current:
                 merged.append(current)
-                current = ""
             for start in range(0, len(para), size - overlap):
                 merged.append(para[start : start + size])
+            current = _tail(merged[-1])
         elif not current:
             current = para
         elif len(current) + 2 + len(para) <= size:
             current += "\n\n" + para
         else:
             merged.append(current)
-            current = para
+            tail = _tail(current)
+            current = f"{tail}\n\n{para}" if tail else para
     if current:
         merged.append(current)
     return [
@@ -60,13 +71,18 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
       id        (str)   — item code, used as source key
       name      (str)   — display name
       price     (float) — price in USD
-      type      (str)   — "biopsy" | "protocol" | "cytology" | etc.
+      type      (str)   — "biopsy" | "protocol" | "cytology" | etc. Alias: "doc_type"
+                          (e.g. "info" | "price_table" | "policy" | "faq").
                           Special value "org_metadata" skips embedding and instead
                           returns tenant config (expertise_area, contact_url) as second
                           element of the returned tuple.
       category  (str)   — catalog section
       keywords  (list)  — trigger terms for retrieval (critical for protocols)
-      text      (str)   — pre-built embedding text; overrides auto-construction
+      text      (str)   — pre-built embedding text; overrides auto-construction.
+                          Alias: "content" (used when "text" is absent).
+      title     (str)   — optional heading prepended before the embedding text —
+                          useful for section-level chunks (e.g. a price table
+                          covering several items under one heading).
       description (str) — additional context injected into embedding text
     """
     chunks: list[dict] = []
@@ -81,7 +97,9 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             logger.warning("jsonl_skip_invalid_line file=%s line=%d", filename, line_num)
             continue
 
-        if item.get("type") == "org_metadata":
+        item_type = item.get("type") or item.get("doc_type")
+
+        if item_type == "org_metadata":
             org_meta = item
             logger.info("jsonl_org_metadata file=%s", filename)
             continue
@@ -90,8 +108,9 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
         # Keywords are always appended to the embedding regardless of whether text
         # is provided — separating text narrative from retrieval keywords is valid
         # schema design, but the indexer must merge both into the vector.
-        if item.get("text"):
-            embed_text = str(item["text"])
+        prebuilt_text = item.get("text") or item.get("content")
+        if prebuilt_text:
+            embed_text = str(prebuilt_text)
             if item.get("price") is not None and "$" not in embed_text:
                 embed_text += f" ${item['price']:.2f}"
             if item.get("keywords"):
@@ -105,8 +124,8 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
                 parts.append(str(item["name"]))
             if item.get("price") is not None:
                 parts.append(f"${item['price']}")
-            if item.get("type"):
-                parts.append(f"Tipo: {item['type']}")
+            if item_type:
+                parts.append(f"Tipo: {item_type}")
             if item.get("category"):
                 parts.append(f"Categoría: {item['category']}")
             if item.get("keywords"):
@@ -115,6 +134,9 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             if item.get("description"):
                 parts.append(str(item["description"]))
             embed_text = "\n".join(parts)
+
+        if item.get("title"):
+            embed_text = f"{item['title']}\n{embed_text}"
 
         if not embed_text or scan_chunk_for_injection(embed_text):
             continue
@@ -130,8 +152,8 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             meta["id"] = str(item["id"])
         if item.get("price") is not None:
             meta["price"] = float(item["price"])
-        if item.get("type"):
-            meta["type"] = str(item["type"])
+        if item_type:
+            meta["type"] = str(item_type)
         if item.get("category"):
             meta["category"] = str(item["category"])
         if item.get("keywords"):
@@ -142,7 +164,7 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             "content": embed_text,
             "source": f"{filename}:{item_id}",
             "page": line_num,
-            "chunk_type": str(item["type"]) if item.get("type") else None,
+            "chunk_type": str(item_type) if item_type else None,
             "metadata": meta or None,
         })
 
@@ -155,6 +177,7 @@ async def run_index_job(
     filename: str,
     tenant_id: int,
     namespace: str,
+    replace_all: bool = False,
 ) -> None:
     async with AsyncSessionLocal() as db:
         job = await db.get(IndexJob, job_id)
@@ -165,22 +188,32 @@ async def run_index_job(
         await db.commit()
 
     try:
-        # Replace-on-re-upload: delete stale chunks for this filename before
-        # inserting new ones so the namespace stays clean without manual cleanup.
-        # Covers both plain source ("file.md") and JSONL keyed sources ("file.jsonl:ID").
+        # Replace-on-re-upload: delete stale chunks before inserting new ones
+        # so the namespace stays clean without manual cleanup. Default scope
+        # is this filename only (plain "file.md" or JSONL-keyed "file.jsonl:ID"),
+        # so unrelated documents for the same tenant are untouched. replace_all
+        # widens this to the whole tenant — e.g. when replacing an entire
+        # catalog with a new source file/format.
         async with AsyncSessionLocal() as db:
-            result = await db.execute(
-                text("""
-                    DELETE FROM document_chunks
-                     WHERE tenant_id = :tid
-                       AND (source = :src OR source LIKE :prefix)
-                """),
-                {"tid": tenant_id, "src": filename, "prefix": f"{filename}:%"},
-            )
+            if replace_all:
+                result = await db.execute(
+                    text("DELETE FROM document_chunks WHERE tenant_id = :tid"),
+                    {"tid": tenant_id},
+                )
+            else:
+                result = await db.execute(
+                    text("""
+                        DELETE FROM document_chunks
+                         WHERE tenant_id = :tid
+                           AND (source = :src OR source LIKE :prefix)
+                    """),
+                    {"tid": tenant_id, "src": filename, "prefix": f"{filename}:%"},
+                )
             replaced = result.rowcount
             await db.commit()
         if replaced:
-            logger.info("index_replaced_stale job=%s filename=%s deleted=%d", job_id, filename, replaced)
+            logger.info("index_replaced_stale job=%s filename=%s deleted=%d replace_all=%s",
+                         job_id, filename, replaced, replace_all)
 
         if filename.lower().endswith(".jsonl"):
             all_chunks, org_meta = _extract_jsonl_chunks(content, filename)

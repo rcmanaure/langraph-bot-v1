@@ -215,6 +215,16 @@ async def delete_tenant(slug: str, body: TenantDelete, _: None = Depends(verify_
             except Exception:
                 pass
 
+        # Long-term profile memory (Store) namespace is (tenant_slug, "channel:user_id"),
+        # serialized as "{slug}.channel:user_id" in the prefix column — same cleanup pattern.
+        try:
+            await db.execute(
+                text("DELETE FROM store WHERE prefix LIKE :prefix"),
+                {"prefix": f"{slug}.%"},
+            )
+        except Exception:
+            pass
+
         try:
             await db.delete(t)
             await db.commit()
@@ -351,6 +361,7 @@ async def delete_chunks(
 async def create_index_job(
     tenant_slug: str = Form(...),
     file: UploadFile = File(...),
+    replace_all: bool = Form(False),
     _: None = Depends(verify_operator_key),
 ):
     content = await file.read()
@@ -366,9 +377,16 @@ async def create_index_job(
 
         # Check document limit based on plan
         policy = TenantPolicy(tenant_slug=tenant_slug, plan=plan)
-        # Count completed index jobs (= uploaded documents)
+        # Count distinct documents currently active in document_chunks (source
+        # is "{filename}:{item_id}") — NOT historical index_jobs. replace_all
+        # deletes stale document_chunks rows on re-upload, so counting jobs
+        # instead would count every re-upload attempt against the plan limit
+        # forever, defeating replace_all's purpose of freeing up quota.
         doc_count = (await db.scalar(
-            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'DONE'"),
+            text(
+                "SELECT COUNT(DISTINCT split_part(source, ':', 1)) "
+                "FROM document_chunks WHERE tenant_id = :tid"
+            ),
             {"tid": tenant_id},
         )) or 0
 
@@ -396,6 +414,7 @@ async def create_index_job(
             filename=file.filename or "upload",
             tenant_id=tenant_id,
             namespace=tenant_slug,
+            replace_all=replace_all,
         )
     )
     _bg_tasks.add(task)
@@ -452,9 +471,14 @@ async def get_tenant_billing(tenant_slug: str, _: None = Depends(verify_operator
             raise HTTPException(status_code=404, detail="Tenant not found")
         tenant_id, plan = tenant
 
-        # Count current usage (completed documents and total chunks)
+        # Count current usage (active documents and total chunks) — see the
+        # matching comment in create_index_job for why this counts distinct
+        # document_chunks sources rather than historical index_jobs.
         doc_count = (await db.scalar(
-            text("SELECT COUNT(*) FROM index_jobs WHERE tenant_id = :tid AND status = 'DONE'"),
+            text(
+                "SELECT COUNT(DISTINCT split_part(source, ':', 1)) "
+                "FROM document_chunks WHERE tenant_id = :tid"
+            ),
             {"tid": tenant_id},
         )) or 0
         chunk_count = (await db.scalar(
