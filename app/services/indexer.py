@@ -71,13 +71,18 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
       id        (str)   — item code, used as source key
       name      (str)   — display name
       price     (float) — price in USD
-      type      (str)   — "biopsy" | "protocol" | "cytology" | etc.
+      type      (str)   — "biopsy" | "protocol" | "cytology" | etc. Alias: "doc_type"
+                          (e.g. "info" | "price_table" | "policy" | "faq").
                           Special value "org_metadata" skips embedding and instead
                           returns tenant config (expertise_area, contact_url) as second
                           element of the returned tuple.
       category  (str)   — catalog section
       keywords  (list)  — trigger terms for retrieval (critical for protocols)
-      text      (str)   — pre-built embedding text; overrides auto-construction
+      text      (str)   — pre-built embedding text; overrides auto-construction.
+                          Alias: "content" (used when "text" is absent).
+      title     (str)   — optional heading prepended before the embedding text —
+                          useful for section-level chunks (e.g. a price table
+                          covering several items under one heading).
       description (str) — additional context injected into embedding text
     """
     chunks: list[dict] = []
@@ -92,7 +97,9 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             logger.warning("jsonl_skip_invalid_line file=%s line=%d", filename, line_num)
             continue
 
-        if item.get("type") == "org_metadata":
+        item_type = item.get("type") or item.get("doc_type")
+
+        if item_type == "org_metadata":
             org_meta = item
             logger.info("jsonl_org_metadata file=%s", filename)
             continue
@@ -101,8 +108,9 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
         # Keywords are always appended to the embedding regardless of whether text
         # is provided — separating text narrative from retrieval keywords is valid
         # schema design, but the indexer must merge both into the vector.
-        if item.get("text"):
-            embed_text = str(item["text"])
+        prebuilt_text = item.get("text") or item.get("content")
+        if prebuilt_text:
+            embed_text = str(prebuilt_text)
             if item.get("price") is not None and "$" not in embed_text:
                 embed_text += f" ${item['price']:.2f}"
             if item.get("keywords"):
@@ -116,8 +124,8 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
                 parts.append(str(item["name"]))
             if item.get("price") is not None:
                 parts.append(f"${item['price']}")
-            if item.get("type"):
-                parts.append(f"Tipo: {item['type']}")
+            if item_type:
+                parts.append(f"Tipo: {item_type}")
             if item.get("category"):
                 parts.append(f"Categoría: {item['category']}")
             if item.get("keywords"):
@@ -126,6 +134,9 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             if item.get("description"):
                 parts.append(str(item["description"]))
             embed_text = "\n".join(parts)
+
+        if item.get("title"):
+            embed_text = f"{item['title']}\n{embed_text}"
 
         if not embed_text or scan_chunk_for_injection(embed_text):
             continue
@@ -141,8 +152,8 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             meta["id"] = str(item["id"])
         if item.get("price") is not None:
             meta["price"] = float(item["price"])
-        if item.get("type"):
-            meta["type"] = str(item["type"])
+        if item_type:
+            meta["type"] = str(item_type)
         if item.get("category"):
             meta["category"] = str(item["category"])
         if item.get("keywords"):
@@ -153,7 +164,7 @@ def _extract_jsonl_chunks(content: bytes, filename: str) -> tuple[list[dict], di
             "content": embed_text,
             "source": f"{filename}:{item_id}",
             "page": line_num,
-            "chunk_type": str(item["type"]) if item.get("type") else None,
+            "chunk_type": str(item_type) if item_type else None,
             "metadata": meta or None,
         })
 

@@ -597,6 +597,19 @@ async def test_generate_rag_prompt_forbids_recalculating_tag(base_state):
 
 
 @pytest.mark.asyncio
+async def test_generate_rag_prompt_forbids_leaking_tag_into_reply(base_state):
+    """Regression test: a live LLM call echoed '[COINCIDENCIA EXACTA]' verbatim
+    into the user-facing answer — the tag is an internal classification signal,
+    never meant to reach the customer. The prompt must explicitly forbid this,
+    not just explain what the tag means."""
+    system_content = await _run_generate_with_chunks(
+        base_state, [{"content": "x", "similarity": 0.9}]
+    )
+
+    assert "NUNCA las escribas literalmente" in system_content
+
+
+@pytest.mark.asyncio
 async def test_generate_rag_prompt_keeps_hedge_after_positive_confirmation(base_state):
     """Regression test: a real conversation showed the model correctly hedging
     on the FIRST approximate-match offer ("lo más cercano que tenemos... ¿es

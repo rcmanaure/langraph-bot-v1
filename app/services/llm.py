@@ -25,6 +25,15 @@ def get_vision_llm() -> ChatOpenAI:
     )
 
 
+def get_openrouter_headers() -> dict:
+    """Auth + referer headers for raw HTTP calls to OpenRouter endpoints that
+    aren't chat-completions (e.g. /rerank) and so can't go through ChatOpenAI."""
+    return {
+        "Authorization": f"Bearer {settings.openrouter_api_key}",
+        "HTTP-Referer": f"https://{settings.app_domain}",
+    }
+
+
 def get_embeddings() -> CachedEmbeddings:
     underlying = OpenAIEmbeddings(
         model=settings.embedding_model,

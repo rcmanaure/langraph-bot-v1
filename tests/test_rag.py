@@ -3,8 +3,9 @@ embeddings are mocked."""
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 
-from app.services.rag import retrieve_chunks
+from app.services.rag import cap_chunks_to_tokens, retrieve_chunks, token_counter
 
 
 def _row(content, source, page, similarity):
@@ -79,3 +80,74 @@ async def test_retrieve_chunks_empty_result_returns_empty_list():
         chunks = await retrieve_chunks(mock_db, "algo que no existe en el catalogo", "tenant-1")
 
     assert chunks == []
+
+
+# ---------------------------------------------------------------------------
+# cap_chunks_to_tokens / token_counter — used by retrieve(), generate(), and
+# triage() to keep prompts under budget; untested until now.
+# ---------------------------------------------------------------------------
+
+def test_cap_chunks_to_tokens_empty_list_returns_empty():
+    assert cap_chunks_to_tokens([], max_tokens=1000) == []
+
+
+def test_cap_chunks_to_tokens_keeps_all_when_under_budget():
+    chunks = [{"content": "short chunk one"}, {"content": "short chunk two"}]
+    assert cap_chunks_to_tokens(chunks, max_tokens=1000) == chunks
+
+
+def test_cap_chunks_to_tokens_drops_oversized_first_chunk_entirely():
+    """A single chunk larger than the whole budget is dropped, not truncated
+    to fit — cap_chunks_to_tokens only ever keeps or skips whole chunks."""
+    huge_chunk = {"content": "palabra " * 2000}  # way over any reasonable budget
+    chunks = [huge_chunk, {"content": "small chunk"}]
+
+    result = cap_chunks_to_tokens(chunks, max_tokens=10)
+
+    assert result == []  # the loop breaks on the first chunk, never reaches the second
+
+
+def test_cap_chunks_to_tokens_stops_at_first_chunk_that_would_exceed():
+    """Greedy/order-dependent: once a chunk would push the running total over
+    budget, iteration stops — later chunks that might individually fit are
+    never considered, even if they're smaller than the one that broke the loop."""
+    chunks = [
+        {"content": "a"},                 # tiny, fits
+        {"content": "palabra " * 2000},    # huge, breaks the loop
+        {"content": "b"},                 # tiny, would also fit, but never reached
+    ]
+
+    result = cap_chunks_to_tokens(chunks, max_tokens=10)
+
+    assert result == [chunks[0]]
+
+
+def test_cap_chunks_to_tokens_exact_budget_boundary():
+    """A chunk landing exactly on the budget is kept (strict > check, not >=)."""
+    chunk = {"content": "hola"}
+    exact_tokens = token_counter([HumanMessage(content="hola")])
+
+    result = cap_chunks_to_tokens([chunk], max_tokens=exact_tokens)
+
+    assert result == [chunk]
+
+
+def test_token_counter_empty_list_returns_zero():
+    assert token_counter([]) == 0
+
+
+def test_token_counter_ignores_non_string_content():
+    """Multimodal message content (list of content blocks, e.g. image_url
+    parts) isn't text — token_counter must not crash or mis-count on it."""
+    text_msg = HumanMessage(content="hola mundo")
+    multimodal_msg = HumanMessage(content=[{"type": "image_url", "image_url": {"url": "data:..."}}])
+
+    text_only = token_counter([text_msg])
+    with_multimodal = token_counter([text_msg, multimodal_msg])
+
+    assert with_multimodal == text_only  # the non-string message contributes 0
+
+
+def test_token_counter_counts_ai_and_human_messages():
+    msgs = [HumanMessage(content="hola"), AIMessage(content="hola, como estas")]
+    assert token_counter(msgs) == token_counter([msgs[0]]) + token_counter([msgs[1]])

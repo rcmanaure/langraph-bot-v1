@@ -35,9 +35,10 @@ class Settings(BaseSettings):
     # Hybrid search (dense + keyword, fused via RRF)
     hybrid_candidate_k: int = 30
     rrf_k: int = 60
-    # LLM-based reranking of hybrid-search candidates before generation
+    # Cross-encoder reranking of hybrid-search candidates before generation
     rerank_enabled: bool = True
     rerank_candidate_k: int = 20
+    rerank_model: str = "nvidia/llama-nemotron-rerank-vl-1b-v2:free"
 
     # Channels
     telegram_bot_token: str = ""
