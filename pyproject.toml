@@ -41,6 +41,10 @@ dependencies = [
     "apscheduler>=3.10.0",
     # Monitoring
     "sentry-sdk[fastapi]>=2.19.0",
+    # Google Drive/Gmail integration (lab staff search, phase 1)
+    "google-api-python-client>=2.150.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-auth-httplib2>=0.2.0",
 ]
 
 [project.optional-dependencies]

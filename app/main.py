@@ -94,9 +94,26 @@ async def lifespan(app: FastAPI):
     logger.info("shutdown_complete")
 
 
+def _scrub_lab_search_pii(event: dict, hint: dict) -> dict | None:
+    """Defense-in-depth: drive.py/gmail.py/lab_search_handler.py never embed
+    raw patient-filter text in log messages or exception strings (checked at
+    review time), but this backstop ensures a future change can't
+    accidentally leak a patient name into Sentry via an `extra` key."""
+    for key in ("lab_search_filters", "filters_used"):
+        event.get("extra", {}).pop(key, None)
+        for value in event.get("contexts", {}).values():
+            if isinstance(value, dict):
+                value.pop(key, None)
+    return event
+
+
 def _setup_sentry() -> None:
     if settings.sentry_dsn:
-        sentry_sdk.init(dsn=settings.sentry_dsn, environment=settings.environment)
+        sentry_sdk.init(
+            dsn=settings.sentry_dsn,
+            environment=settings.environment,
+            before_send=_scrub_lab_search_pii,
+        )
 
 
 def create_app() -> FastAPI:

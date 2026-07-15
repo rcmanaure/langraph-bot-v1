@@ -51,6 +51,13 @@ class Settings(BaseSettings):
     csrf_secret: str = ""
     operator_token: str = ""  # if set, used for operator/admin auth instead of secret_key
 
+    # Google OAuth (lab staff search, phase 1) — one tenant-level Drive/Gmail
+    # connection, admin-provisioned. Scopes are read-only by design (search +
+    # fetch, never write/delete).
+    google_oauth_client_id: str = ""
+    google_oauth_client_secret: str = ""
+    google_oauth_redirect_uri: str = ""
+
     # LangSmith
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""

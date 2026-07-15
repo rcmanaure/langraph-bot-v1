@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 import secrets
+import time
 import uuid
 from typing import Literal
 
@@ -14,12 +15,20 @@ from sqlalchemy.exc import IntegrityError
 from app.auth import verify_operator_key
 from app.channels.telegram import delete_webhook, get_webhook_info, set_webhook
 from app.config import settings
+from app.crypto import EncryptionNotConfiguredError, require_fernet
 from app.db import AsyncSessionLocal
-from app.models import IndexJob, IndexJobStatus, Tenant
+from app.models import IndexJob, IndexJobStatus, IntegrationCredential, StaffSecret, Tenant
 from app.policies import TenantPolicy
+from app.services.google_api_utils import GOOGLE_SCOPES, encrypt_credentials
 from app.services.indexer import run_index_job
 
 _bg_tasks: set[asyncio.Task] = set()
+
+# OAuth CSRF state → tenant slug, short-lived (admin-initiated flow, low
+# volume — in-memory is fine, matches other in-process caches in this app).
+# Single-worker process (entrypoint.sh --workers 1) makes this safe.
+_OAUTH_STATE: dict[str, tuple[str, float]] = {}
+_OAUTH_STATE_TTL = 600  # 10 min — plenty for an admin to complete the consent screen
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 public_router = APIRouter(tags=["billing"])
@@ -503,6 +512,221 @@ async def get_tenant_billing(tenant_slug: str, _: None = Depends(verify_operator
             "chunks": round((chunk_count / limits[1] * 100) if limits[1] > 0 else 0, 1),
         }
     }
+
+
+# ── Lab staff search: staff secrets (T1) ────────────────────────────────────
+
+class StaffSecretCreate(BaseModel):
+    label: str
+
+
+@router.post("/tenants/{slug}/staff-secrets", status_code=201)
+async def issue_staff_secret(
+    slug: str, body: StaffSecretCreate, _: None = Depends(verify_operator_key)
+):
+    """Issue a new named, per-employee unlock secret. Returned exactly once —
+    only the hash is stored, matching the raw_api_key pattern (T1)."""
+    async with AsyncSessionLocal() as db:
+        tenant_id = await db.scalar(select(Tenant.id).where(Tenant.slug == slug))
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        raw_secret = secrets.token_hex(24)
+        secret = StaffSecret(
+            tenant_id=tenant_id,
+            label=body.label,
+            secret_hash=hashlib.sha256(raw_secret.encode()).hexdigest(),
+        )
+        db.add(secret)
+        await db.commit()
+        await db.refresh(secret)
+
+    return {"id": secret.id, "label": secret.label, "secret": raw_secret}
+
+
+@router.get("/tenants/{slug}/staff-secrets")
+async def list_staff_secrets(slug: str, _: None = Depends(verify_operator_key)):
+    """Never returns the secret itself — only enough to manage it."""
+    async with AsyncSessionLocal() as db:
+        tenant_id = await db.scalar(select(Tenant.id).where(Tenant.slug == slug))
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        rows = (await db.execute(
+            select(StaffSecret).where(StaffSecret.tenant_id == tenant_id)
+            .order_by(StaffSecret.created_at.desc())
+        )).scalars().all()
+
+    return [
+        {
+            "id": s.id,
+            "label": s.label,
+            "bound": s.bound_user_id is not None,
+            "revoked": s.revoked_at is not None,
+            "created_at": s.created_at,
+        }
+        for s in rows
+    ]
+
+
+@router.post("/tenants/{slug}/staff-secrets/{secret_id}/revoke")
+async def revoke_staff_secret(
+    slug: str, secret_id: int, _: None = Depends(verify_operator_key)
+):
+    async with AsyncSessionLocal() as db:
+        secret = (await db.execute(
+            select(StaffSecret)
+            .join(Tenant, Tenant.id == StaffSecret.tenant_id)
+            .where(Tenant.slug == slug, StaffSecret.id == secret_id)
+        )).scalar_one_or_none()
+        if not secret:
+            raise HTTPException(status_code=404, detail="Staff secret not found")
+
+        await db.execute(
+            text("UPDATE staff_secrets SET revoked_at = now() WHERE id = :id"),
+            {"id": secret_id},
+        )
+        await db.commit()
+
+    return {"id": secret_id, "revoked": True}
+
+
+# ── Lab staff search: Google OAuth connection (T3) ──────────────────────────
+
+def _require_oauth_config() -> None:
+    if not (settings.google_oauth_client_id and settings.google_oauth_client_secret
+            and settings.google_oauth_redirect_uri):
+        raise HTTPException(
+            status_code=500,
+            detail="Google OAuth is not configured (GOOGLE_OAUTH_CLIENT_ID/SECRET/REDIRECT_URI)",
+        )
+
+
+def _build_oauth_flow():
+    from google_auth_oauthlib.flow import Flow
+
+    return Flow.from_client_config(
+        {
+            "web": {
+                "client_id": settings.google_oauth_client_id,
+                "client_secret": settings.google_oauth_client_secret,
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": [settings.google_oauth_redirect_uri],
+            }
+        },
+        scopes=GOOGLE_SCOPES,
+        redirect_uri=settings.google_oauth_redirect_uri,
+    )
+
+
+def _purge_expired_oauth_state() -> None:
+    now = time.monotonic()
+    expired = [k for k, (_, exp) in _OAUTH_STATE.items() if exp < now]
+    for k in expired:
+        _OAUTH_STATE.pop(k, None)
+
+
+@router.get("/tenants/{slug}/google/connect")
+async def google_connect_start(slug: str, _: None = Depends(verify_operator_key)):
+    """Admin-initiated: returns the Google consent URL for this tenant's
+    shared Drive/Gmail connection. Admin opens it in a browser and completes
+    the consent screen — this is a one-time setup step, not a chat flow."""
+    _require_oauth_config()
+    async with AsyncSessionLocal() as db:
+        exists = await db.scalar(select(Tenant.id).where(Tenant.slug == slug))
+        if not exists:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+    _purge_expired_oauth_state()
+    state = secrets.token_urlsafe(24)
+    _OAUTH_STATE[state] = (slug, time.monotonic() + _OAUTH_STATE_TTL)
+
+    flow = _build_oauth_flow()
+    auth_url, _ = flow.authorization_url(
+        access_type="offline", include_granted_scopes="true",
+        prompt="consent",  # force refresh_token issuance even on re-consent
+        state=state,
+    )
+    return {"authorization_url": auth_url}
+
+
+@router.get("/google/oauth/callback", include_in_schema=False)
+async def google_oauth_callback(request: Request, state: str, code: str | None = None,
+                                  error: str | None = None):
+    """Google redirects here after the admin completes (or cancels) consent.
+    Not behind verify_operator_key — Google itself calls this URL — the CSRF
+    `state` token is the auth boundary instead."""
+    _purge_expired_oauth_state()
+    entry = _OAUTH_STATE.pop(state, None)
+    if not entry:
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    slug, _ = entry
+
+    if error:
+        return {"connected": False, "error": error}
+
+    flow = _build_oauth_flow()
+    try:
+        await asyncio.get_running_loop().run_in_executor(
+            None, lambda: flow.fetch_token(code=code)
+        )
+    except Exception as exc:
+        return {"connected": False, "error": str(exc)}
+
+    creds = flow.credentials
+
+    try:
+        require_fernet()
+    except EncryptionNotConfiguredError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    async with AsyncSessionLocal() as db:
+        tenant_id = await db.scalar(select(Tenant.id).where(Tenant.slug == slug))
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        existing = (await db.execute(
+            select(IntegrationCredential).where(
+                IntegrationCredential.tenant_id == tenant_id,
+                IntegrationCredential.integration_type == "google_drive_gmail",
+            )
+        )).scalar_one_or_none()
+
+        encrypted = encrypt_credentials(creds)
+        if existing:
+            existing.encrypted_credentials = encrypted
+        else:
+            db.add(IntegrationCredential(
+                tenant_id=tenant_id,
+                integration_type="google_drive_gmail",
+                encrypted_credentials=encrypted,
+            ))
+        await db.commit()
+
+    return {"connected": True, "slug": slug}
+
+
+@router.post("/tenants/{slug}/google/revoke")
+async def google_revoke(slug: str, _: None = Depends(verify_operator_key)):
+    async with AsyncSessionLocal() as db:
+        tenant_id = await db.scalar(select(Tenant.id).where(Tenant.slug == slug))
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        cred = (await db.execute(
+            select(IntegrationCredential).where(
+                IntegrationCredential.tenant_id == tenant_id,
+                IntegrationCredential.integration_type == "google_drive_gmail",
+            )
+        )).scalar_one_or_none()
+        if not cred:
+            raise HTTPException(status_code=404, detail="No Google connection for this tenant")
+
+        await db.delete(cred)
+        await db.commit()
+
+    return {"slug": slug, "disconnected": True}
 
 
 @public_router.get("/pricing")

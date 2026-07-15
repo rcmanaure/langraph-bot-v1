@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
 from app.channels.base import ChannelEvent
+from app.channels.lab_search_handler import handle_staff_message, is_staff_session_active
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.services.vision import MAX_MEDIA_BYTES as MAX_VOICE_BYTES
@@ -256,6 +257,7 @@ class TelegramAdapter:
 
 async def _process_update(
     tenant_slug: str,
+    tenant_id: int,
     bot_token: str,
     webhook_secret: str,
     body: dict,
@@ -269,6 +271,31 @@ async def _process_update(
     chat_id = msg["chat"]["id"]
     user_id = str((msg.get("from") or {}).get("id", "unknown"))
     adapter = TelegramAdapter(tenant_slug, bot_token, webhook_secret)
+
+    # Lab staff search (phase 1) intercepts ABOVE both the photo→vision
+    # routing and the normal triage/StateGraph path below — staff messages
+    # must never reach either. Cached on user_id, NOT chat_id (see
+    # lab_search_handler's module docstring for why). Text-only in this
+    # phase: an already-unlocked staff session sending a photo/audio gets a
+    # clear "not supported yet" reply instead of falling into the patient
+    # vision/STT pipeline (image-as-trigger is phase 2, not built here).
+    text_content_raw = (msg.get("text") or "").strip()
+    is_non_text_media = any(k in msg for k in (*_AUDIO_MSG_TYPES, "photo"))
+
+    async def _staff_send(cid: str, txt: str) -> None:
+        await _send(bot_token, cid, txt)
+
+    if text_content_raw:
+        handled = await handle_staff_message(
+            tenant_id=tenant_id, tenant_slug=tenant_slug, user_id=user_id,
+            chat_id=str(chat_id), message_text=text_content_raw, send=_staff_send,
+        )
+        if handled:
+            return
+    elif is_non_text_media and is_staff_session_active(tenant_slug, user_id):
+        await _send(bot_token, chat_id,
+                    "La búsqueda por imagen todavía no está disponible. Escribí tu búsqueda en texto.")
+        return
 
     # Feedback immediately, before any download/STT/vision work — those can
     # take several seconds and the user should see a signal right away.
@@ -377,7 +404,7 @@ async def telegram_webhook(
     # All heavy work (LLM) runs in background AFTER this handler returns.
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
-            text("SELECT bot_token, webhook_secret FROM tenants WHERE slug = :s AND active = true"),
+            text("SELECT id, bot_token, webhook_secret FROM tenants WHERE slug = :s AND active = true"),
             {"s": tenant_slug},
         )).first()
 
@@ -399,6 +426,7 @@ async def telegram_webhook(
     background_tasks.add_task(
         _process_update,
         tenant_slug,
+        row.id,
         row.bot_token,
         row.webhook_secret,
         body,

@@ -2,6 +2,23 @@
 
 Items accepted for future work but out of current PR scope.
 
+- **`search_audit.filters_used` stores patient names in plaintext.** Accepted
+  phase-1 risk (lab-staff-search plan, Round 2 outside-voice finding) — audit
+  needs to be human-readable for compliance review, and this is an internal
+  tool, not a public surface. Sentry breadcrumbs/context are scrubbed
+  defensively (`app/main.py:_scrub_lab_search_pii`), and no log/exception
+  message anywhere in `drive.py`/`gmail.py`/`lab_search_handler.py` embeds raw
+  filter text. Revisit if the lab's compliance posture requires encryption at
+  rest for audit rows.
+- **Lab staff search phase 2 (vision auto-match, fuzzy-match, image-as-
+  trigger, `search_result_cache`)** — deliberately deferred, needs its own
+  `/plan-ceo-review` + `/plan-eng-review` pass once phase 1 has real usage
+  data. See the plan file's "Phase 2 backlog" section.
+- **Google Workspace least-privilege folder/label scoping for the shared
+  Drive/Gmail service credential** — admin-console task (share only the
+  results folder with the connected account), not code. Do before granting a
+  real lab tenant staff-secret access.
+
 - **WhatsApp: `WhatsAppAdapter.normalize()` is unused by the live webhook path.**
   `whatsapp_webhook`/`_handle_message` (`app/channels/whatsapp.py`) parse the raw
   payload directly instead of going through the `ChannelAdapter` Protocol, unlike
