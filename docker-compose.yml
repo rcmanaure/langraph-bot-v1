@@ -1,24 +1,24 @@
 services:
-  postgres:
-    image: pgvector/pgvector:0.8.2-pg16
-    environment:
-      POSTGRES_USER: ${DB_USER:-ragbot}
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-ragbot}
-      POSTGRES_DB: ${DB_NAME:-ragbot}
-    command: >
-      postgres
-        -c max_connections=100
-        -c shared_buffers=128MB
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ragbot}"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-    restart: unless-stopped
-    networks:
-      - lgbot-net
+#  postgres:
+#    image: pgvector/pgvector:0.8.2-pg16
+#    environment:
+#      POSTGRES_USER: ${DB_USER:-ragbot}
+#      POSTGRES_PASSWORD: ${DB_PASSWORD:-ragbot}
+#      POSTGRES_DB: ${DB_NAME:-ragbot}
+#    command: >
+#      postgres
+#        -c max_connections=100
+#        -c shared_buffers=128MB
+#    volumes:
+#      - pgdata:/var/lib/postgresql/data
+#    healthcheck:
+#      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-ragbot}"]
+#      interval: 5s
+#      timeout: 3s
+#      retries: 10
+#    restart: unless-stopped
+#    networks:
+#      - lgbot-net
 
   api:
     build: .
@@ -26,9 +26,9 @@ services:
     env_file: .env
     ports:
       - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
+ #   depends_on:
+ #     postgres:
+ #       condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\""]
       interval: 10s
@@ -38,6 +38,7 @@ services:
     restart: unless-stopped
     networks:
       - lgbot-net
+      - postgresql-net
     labels:
       - traefik.enable=true
       - traefik.http.routers.lgbot.rule=Host(`${TRAEFIK_HOST}`)
@@ -54,9 +55,12 @@ services:
       - traefik.http.routers.lgbot_upload.service=lgbot_upload
       - traefik.http.services.lgbot_upload.loadbalancer.server.port=8000
 
-volumes:
-  pgdata:
+#volumes:
+#  pgdata:
 
 networks:
   lgbot-net:
+    external: true
+  postgresql-net:
+    name: postgresql-hr9b_default
     external: true
