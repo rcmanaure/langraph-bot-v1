@@ -1,8 +1,21 @@
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
     from fastapi import Request
+
+
+def dedup_seen(cache: "OrderedDict[str, bool]", key: str, max_size: int) -> bool:
+    """LRU-bounded "have we seen this key" check. Returns True (and leaves the
+    cache untouched) on repeat keys; otherwise records the key and evicts the
+    oldest entry once max_size is exceeded."""
+    if key in cache:
+        return True
+    cache[key] = True
+    if len(cache) > max_size:
+        cache.popitem(last=False)
+    return False
 
 
 @dataclass

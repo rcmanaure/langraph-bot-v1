@@ -10,7 +10,7 @@ from fastapi.responses import PlainTextResponse
 from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
-from app.channels.base import ChannelEvent
+from app.channels.base import ChannelEvent, dedup_seen
 from app.config import settings
 from app.crypto import decrypt_value
 from app.db import AsyncSessionLocal
@@ -31,12 +31,7 @@ _SEEN_WA_MAX = 1000
 
 
 def _is_duplicate_wa(msg_id: str) -> bool:
-    if msg_id in _SEEN_WA:
-        return True
-    _SEEN_WA[msg_id] = True
-    if len(_SEEN_WA) > _SEEN_WA_MAX:
-        _SEEN_WA.popitem(last=False)
-    return False
+    return dedup_seen(_SEEN_WA, msg_id, _SEEN_WA_MAX)
 
 
 class WhatsAppAdapter:

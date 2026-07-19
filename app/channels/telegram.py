@@ -10,7 +10,7 @@ from fastapi import APIRouter, BackgroundTasks, Request
 from langchain_core.messages import HumanMessage
 from sqlalchemy import text
 
-from app.channels.base import ChannelEvent
+from app.channels.base import ChannelEvent, dedup_seen
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.services.vision import MAX_MEDIA_BYTES as MAX_VOICE_BYTES
@@ -30,13 +30,7 @@ _SEEN_MAX = 1000
 
 
 def _is_duplicate(tenant_slug: str, update_id: int) -> bool:
-    key = f"{tenant_slug}:{update_id}"
-    if key in _SEEN_UPDATES:
-        return True
-    _SEEN_UPDATES[key] = True
-    if len(_SEEN_UPDATES) > _SEEN_MAX:
-        _SEEN_UPDATES.popitem(last=False)
-    return False
+    return dedup_seen(_SEEN_UPDATES, f"{tenant_slug}:{update_id}", _SEEN_MAX)
 
 
 async def set_webhook(token: str, webhook_url: str, secret: str) -> bool:

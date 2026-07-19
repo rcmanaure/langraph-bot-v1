@@ -87,7 +87,7 @@ class Settings(BaseSettings):
 settings = Settings()
 
 PLAN_LIMITS: dict[str, dict] = {
-    "free":  {"docs": 5,   "chunks": 500,   "queries_monthly": 500},
-    "basic": {"docs": 20,  "chunks": 2000,  "queries_monthly": 2000},
-    "pro":   {"docs": 100, "chunks": 10000, "queries_monthly": 10000},
+    "free":  {"docs": 5,   "chunks": 500,   "queries_monthly": 500,   "price_usd": 0},
+    "basic": {"docs": 20,  "chunks": 2000,  "queries_monthly": 2000,  "price_usd": 5},
+    "pro":   {"docs": 100, "chunks": 10000, "queries_monthly": 10000, "price_usd": 10},
 }
