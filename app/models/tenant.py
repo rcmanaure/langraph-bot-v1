@@ -3,6 +3,15 @@ from sqlalchemy.ext.hybrid import hybrid_property
 
 from app.models.base import Base
 
+# Free-text voice/register description injected into the generation prompt
+# (see app/graph/nodes/generate.py). Free text, not an enum, because tenants
+# span arbitrary business types (clinic, gym, bakery...) — a fixed preset list
+# can't cover that and would require a code change per new tenant vertical.
+DEFAULT_TONE_DESCRIPTION = (
+    "cálido y cercano, como una persona del negocio respondiendo por chat. "
+    "Nada de lenguaje robótico, emojis casuales están bien"
+)
+
 
 class Tenant(Base):
     __tablename__ = "tenants"
@@ -14,6 +23,9 @@ class Tenant(Base):
     bot_token = Column(String(128), unique=True, nullable=False)
     plan = Column(String(32), default="free")
     expertise_area = Column(String(255), nullable=True, default="")
+    tone_description = Column(
+        Text, nullable=False, default=DEFAULT_TONE_DESCRIPTION, server_default=DEFAULT_TONE_DESCRIPTION
+    )
     contact_url = Column(String(512), nullable=True)
     example_questions = Column(JSON, nullable=True)
     operator_chat_id = Column(String(64), nullable=True)

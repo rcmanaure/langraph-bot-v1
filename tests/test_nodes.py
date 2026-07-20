@@ -12,6 +12,7 @@ from app.graph.nodes.triage import triage
 from app.graph.nodes.update_profile import update_profile
 from app.graph.nodes.validate import validate
 from app.graph.nodes.validate_output import validate_output
+from app.models.tenant import DEFAULT_TONE_DESCRIPTION
 
 # ---------------------------------------------------------------------------
 # validate node
@@ -517,7 +518,12 @@ async def test_generate_includes_display_name_in_prompt_when_profile_exists(base
 
     with (
         patch("app.graph.nodes.generate.get_chat_llm", return_value=mock_llm),
-        patch("app.graph.nodes.generate._load_tenant", AsyncMock(return_value={"expertise": "labs", "contact_hint": ""})),
+        patch(
+            "app.graph.nodes.generate._load_tenant",
+            AsyncMock(return_value={
+                "expertise": "labs", "tone_description": DEFAULT_TONE_DESCRIPTION, "contact_hint": "",
+            }),
+        ),
     ):
         await generate(base_state, runtime=runtime)
 
@@ -535,7 +541,12 @@ async def test_generate_omits_name_line_when_no_profile(base_state):
 
     with (
         patch("app.graph.nodes.generate.get_chat_llm", return_value=mock_llm),
-        patch("app.graph.nodes.generate._load_tenant", AsyncMock(return_value={"expertise": "labs", "contact_hint": ""})),
+        patch(
+            "app.graph.nodes.generate._load_tenant",
+            AsyncMock(return_value={
+                "expertise": "labs", "tone_description": DEFAULT_TONE_DESCRIPTION, "contact_hint": "",
+            }),
+        ),
     ):
         await generate(base_state, runtime=runtime)
 
@@ -559,7 +570,12 @@ async def _run_generate_with_chunks(base_state, chunks):
 
     with (
         patch("app.graph.nodes.generate.get_chat_llm", return_value=mock_llm),
-        patch("app.graph.nodes.generate._load_tenant", AsyncMock(return_value={"expertise": "labs", "contact_hint": ""})),
+        patch(
+            "app.graph.nodes.generate._load_tenant",
+            AsyncMock(return_value={
+                "expertise": "labs", "tone_description": DEFAULT_TONE_DESCRIPTION, "contact_hint": "",
+            }),
+        ),
     ):
         await generate(base_state, runtime=runtime)
 

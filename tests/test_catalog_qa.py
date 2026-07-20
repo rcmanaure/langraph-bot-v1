@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from app.graph.nodes.generate import generate
 from app.graph.nodes.triage import triage
 from app.graph.nodes.validate import validate
+from app.models.tenant import DEFAULT_TONE_DESCRIPTION
 
 # ---------------------------------------------------------------------------
 # Catalog chunks — verbatim from sp-diagnostico-histologico.md
@@ -73,7 +74,11 @@ THYROID_CHUNKS = [
     {"content": "SED004 | Tiroides – Tiroidectomía Total y Vaciamiento Ganglionar Cervical | $300.00"},
 ]
 
-TENANT_CTX = {"expertise": "diagnóstico histológico", "contact_hint": ""}
+TENANT_CTX = {
+    "expertise": "diagnóstico histológico",
+    "tone_description": DEFAULT_TONE_DESCRIPTION,
+    "contact_hint": "",
+}
 
 
 def _make_state(chunks, triage_decision="rag", user_text="consulta"):

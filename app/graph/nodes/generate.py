@@ -7,6 +7,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.graph.thread import profile_namespace
+from app.models.tenant import DEFAULT_TONE_DESCRIPTION
 from app.services.llm import get_chat_llm
 from app.services.rag import cap_chunks_to_tokens, token_counter
 from app.state import AgentState
@@ -15,8 +16,8 @@ logger = logging.getLogger(__name__)
 
 _FORMAT_HINT = """
 Formato (OBLIGATORIO — compatible WhatsApp/Telegram):
-- Tono: cálido y cercano, como una persona del negocio respondiendo por chat. Nada de lenguaje robótico.
-- Puedes abrir con una frase corta y natural si corresponde (ej. "Claro, eso lo tenemos 👌" o "Sí, existe:").
+- Tono: {tone_description}.
+- Abre con una frase breve y natural acorde a ese tono si corresponde (confirmación directa, sin relleno).
 - BREVE: máximo 4-5 líneas en total. Sin párrafos largos.
 - *negrita* con asteriscos simples para códigos y nombres de ítems.
 - _cursiva_ con guiones bajos para notas o aclaraciones breves.
@@ -24,7 +25,7 @@ Formato (OBLIGATORIO — compatible WhatsApp/Telegram):
 - Por ítem: - *CÓDIGO* Nombre: $precio"""
 
 _RAG_SYSTEM = """\
-Eres un asistente de {expertise}. Eres amable y cercano, como alguien del negocio respondiendo por WhatsApp.{name_hint}
+Eres un asistente de {expertise}. Eres {tone_description}.{name_hint}
 Usa ÚNICAMENTE el contexto proporcionado. NO uses conocimiento propio fuera de ese contexto.
 
 Cada ítem del contexto ya viene etiquetado por el sistema de búsqueda como [COINCIDENCIA EXACTA] o
@@ -72,14 +73,18 @@ def _match_tag(similarity: float) -> str:
 async def _load_tenant(slug: str) -> dict:
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
-            text("SELECT expertise_area, contact_url FROM tenants WHERE slug = :s"),
+            text("SELECT expertise_area, tone_description, contact_url FROM tenants WHERE slug = :s"),
             {"s": slug},
         )).first()
     if not row:
-        return {"expertise": "este negocio", "contact_hint": ""}
+        return {"expertise": "este negocio", "tone_description": DEFAULT_TONE_DESCRIPTION, "contact_hint": ""}
     expertise = row.expertise_area or "este negocio"
     contact_hint = (f"\nSi necesitas más ayuda, contacta: {row.contact_url}" if row.contact_url else "")
-    return {"expertise": expertise, "contact_hint": contact_hint}
+    return {
+        "expertise": expertise,
+        "tone_description": row.tone_description or DEFAULT_TONE_DESCRIPTION,
+        "contact_hint": contact_hint,
+    }
 
 
 async def _load_name_hint(state: AgentState, runtime: Runtime | None) -> str:
@@ -140,8 +145,9 @@ async def generate(state: AgentState, runtime: Runtime | None = None) -> dict:
             for c in chunks
         )
     template = _CATALOG_SYSTEM if is_catalog else _RAG_SYSTEM
+    format_hint = _FORMAT_HINT.format(tone_description=tenant_ctx["tone_description"])
     name_hint = await _load_name_hint(state, runtime)
-    system = template.format(context=context, format_hint=_FORMAT_HINT, name_hint=name_hint, **tenant_ctx)
+    system = template.format(context=context, format_hint=format_hint, name_hint=name_hint, **tenant_ctx)
 
     trimmed = trim_messages(
         state["messages"],

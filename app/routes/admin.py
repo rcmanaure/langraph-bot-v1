@@ -16,6 +16,7 @@ from app.channels.telegram import delete_webhook, get_webhook_info, set_webhook
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.models import IndexJob, IndexJobStatus, Tenant
+from app.models.tenant import DEFAULT_TONE_DESCRIPTION
 from app.policies import TenantPolicy
 from app.services.indexer import run_index_job
 
@@ -38,7 +39,7 @@ async def list_tenants(_: None = Depends(verify_operator_key)):
     async with AsyncSessionLocal() as db:
         rows = await db.execute(
             text("""
-                SELECT id, slug, expertise_area, contact_url, plan, active, created_at
+                SELECT id, slug, expertise_area, tone_description, contact_url, plan, active, created_at
                   FROM tenants ORDER BY created_at DESC
             """)
         )
@@ -50,6 +51,7 @@ class TenantCreate(BaseModel):
     bot_token: str
     webhook_secret: str
     expertise_area: str = ""
+    tone_description: str = DEFAULT_TONE_DESCRIPTION
     contact_url: str = ""
     plan: str = "free"
 
@@ -71,10 +73,10 @@ async def create_tenant(body: TenantCreate, _: None = Depends(verify_operator_ke
             text("""
                 INSERT INTO tenants
                     (slug, api_key_hash, webhook_secret, bot_token, plan,
-                     expertise_area, contact_url, active)
+                     expertise_area, tone_description, contact_url, active)
                 VALUES
                     (:slug, :api_key_hash, :webhook_secret, :bot_token, :plan,
-                     :expertise_area, :contact_url, true)
+                     :expertise_area, :tone_description, :contact_url, true)
             """),
             {
                 "slug": body.slug,
@@ -83,6 +85,7 @@ async def create_tenant(body: TenantCreate, _: None = Depends(verify_operator_ke
                 "bot_token": body.bot_token,
                 "plan": body.plan,
                 "expertise_area": body.expertise_area,
+                "tone_description": body.tone_description,
                 "contact_url": body.contact_url,
             },
         )
@@ -94,6 +97,7 @@ async def create_tenant(body: TenantCreate, _: None = Depends(verify_operator_ke
 class TenantPatch(BaseModel):
     plan: Literal["free", "basic", "pro"] | None = None
     expertise_area: str | None = None
+    tone_description: str | None = None
     contact_url: str | None = None
     active: bool | None = None
     # Credential fields — only updated when non-empty string is provided
@@ -121,6 +125,8 @@ async def patch_tenant(slug: str, body: TenantPatch, _: None = Depends(verify_op
             t.plan = body.plan
         if "expertise_area" in fields:
             t.expertise_area = body.expertise_area
+        if "tone_description" in fields:
+            t.tone_description = body.tone_description
         if "contact_url" in fields:
             t.contact_url = body.contact_url
         if "active" in fields:
@@ -171,6 +177,7 @@ async def patch_tenant(slug: str, body: TenantPatch, _: None = Depends(verify_op
         "slug": t.slug,
         "plan": t.plan,
         "expertise_area": t.expertise_area,
+        "tone_description": t.tone_description,
         "contact_url": t.contact_url,
         "active": t.active,
         "webhook_registered": webhook_registered,

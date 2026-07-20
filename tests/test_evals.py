@@ -99,6 +99,7 @@ async def test_triage_off_topic():
 async def test_generate_uses_context():
     """Generate node grounds answer in provided context."""
     from app.graph.nodes.generate import _FORMAT_HINT, _RAG_SYSTEM
+    from app.models.tenant import DEFAULT_TONE_DESCRIPTION
 
 
     context = "El plan básico cuesta $29/mes e incluye hasta 5 usuarios."
@@ -106,7 +107,8 @@ async def test_generate_uses_context():
         expertise="software SaaS",
         contact_hint="",
         context=context,
-        format_hint=_FORMAT_HINT,
+        format_hint=_FORMAT_HINT.format(tone_description=DEFAULT_TONE_DESCRIPTION),
+        tone_description=DEFAULT_TONE_DESCRIPTION,
         name_hint="",
     )
     llm = _eval_llm()
@@ -122,6 +124,7 @@ async def test_generate_uses_context():
 async def test_generate_admits_missing_context():
     """Generate node admits when context is insufficient, doesn't hallucinate."""
     from app.graph.nodes.generate import _FORMAT_HINT, _RAG_SYSTEM
+    from app.models.tenant import DEFAULT_TONE_DESCRIPTION
 
 
     context = "El plan premium incluye soporte prioritario 24/7."
@@ -129,7 +132,8 @@ async def test_generate_admits_missing_context():
         expertise="software SaaS",
         contact_hint="",
         context=context,
-        format_hint=_FORMAT_HINT,
+        format_hint=_FORMAT_HINT.format(tone_description=DEFAULT_TONE_DESCRIPTION),
+        tone_description=DEFAULT_TONE_DESCRIPTION,
         name_hint="",
     )
     llm = _eval_llm()
