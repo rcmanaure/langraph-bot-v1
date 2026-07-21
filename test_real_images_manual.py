@@ -1,17 +1,29 @@
 #!/usr/bin/env python
 """Manual test: OCR stack with real medical order images."""
+import asyncio
 import io
 from pathlib import Path
 
 from PIL import Image
 
 import app.services.vision as vision_module
+from app.services.vision import VISION_UNCERTAIN, extract_procedure_query
 
 
 # Real images from WhatsApp
 IMAGES = {
     "biopsy_1": Path("C:/Users/rcman/Downloads/WhatsApp Image 2026-07-21 at 9.48.45 AM.jpeg"),
     "biopsy_2": Path("C:/Users/rcman/Downloads/WhatsApp Image 2026-07-21 at 11.42.00 AM.jpeg"),
+}
+
+# End-to-end validation set: real biopsy request forms (handwritten, varying
+# legibility) used to check the generalized vision prompt against actual
+# hard cases via a real LLM call, not a mocked response.
+E2E_IMAGES = {
+    "real_1": Path(__file__).parent / "test_images" / "real_1.jpeg",
+    "real_2": Path(__file__).parent / "test_images" / "real_2.jpeg",
+    "real_3": Path(__file__).parent / "test_images" / "real_3.jpeg",
+    "real_4": Path(__file__).parent / "test_images" / "real_4.jpeg",
 }
 
 
@@ -80,7 +92,38 @@ def test_ocr_text_extraction():
         print(f"  Result: OK\n")
 
 
+async def test_real_extraction_end_to_end():
+    """Call the real vision LLM (no mocks) against real biopsy request photos.
+
+    Validates the generalized prompt on actual hard cases: handwritten,
+    photographed on a bed/table/desk, varying legibility. Ground truth isn't
+    available for these (no oracle), so success means the pipeline returns a
+    plausible price_question OR safely reports VISION_UNCERTAIN — it must
+    never crash and must never look confident on a claim it can't back up."""
+    print("\n=== Testing real vision extraction (live API call) ===\n")
+
+    for name, path in E2E_IMAGES.items():
+        if not path.exists():
+            print(f"SKIP: {name} not found at {path}")
+            continue
+
+        print(f"Testing {name} ({path.name})...")
+        img_bytes = path.read_bytes()
+        try:
+            result = await extract_procedure_query(img_bytes, "")
+        except Exception as exc:
+            print(f"  FAIL: raised {exc!r} (must never crash)\n")
+            raise
+
+        if result == VISION_UNCERTAIN:
+            print(f"  Result: VISION_UNCERTAIN (safe default on illegible/ambiguous input)\n")
+        else:
+            print(f"  Result: {result}\n")
+        assert result, "extraction must never return empty/falsy"
+
+
 if __name__ == "__main__":
     test_preprocess_real_images()
     test_ocr_text_extraction()
+    asyncio.run(test_real_extraction_end_to_end())
     print("\n=== All tests PASSED ===\n")

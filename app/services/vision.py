@@ -32,23 +32,23 @@ MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB — shared cap for voice/audio/image
 VISION_UNCERTAIN = "__VISION_UNCERTAIN__"
 
 _VISION_EXTRACT_PROMPT = """\
-Analiza esta imagen médica (orden de examen, informe, o solicitud de biopsia).
+Analiza esta imagen (documento, orden, comprobante, etiqueta de producto, ficha...).
 
-Marca is_legible=true SOLO si podés leer con certeza el nombre del procedimiento o \
-examen escrito en la imagen, letra por letra. Si el texto está borroso, cortado, \
-hay varios exámenes distintos y no sabés cuál se pregunta, o tenés la MÍNIMA duda \
+Marca is_legible=true SOLO si podés leer con certeza el nombre del ítem o \
+procedimiento escrito en la imagen, letra por letra. Si el texto está borroso, cortado, \
+hay varios ítems distintos y no sabés cuál se pregunta, o tenés la MÍNIMA duda \
 sobre qué dice — marcá is_legible=false y dejá procedure_name y price_question \
-vacíos. NUNCA adivines ni asumas un examen "parecido" solo porque el contexto \
-médico te resulte familiar.
+vacíos. NUNCA adivines ni asumas un ítem "parecido" solo porque el contexto \
+del negocio te resulte familiar.
 
 Si is_legible=true, completá dos campos:
-- procedure_name: el nombre EXACTO y LITERAL del procedimiento o examen tal como \
-está escrito en la imagen, sin agregar palabras (ejemplo: "IGRA", "resección de \
-tumor de mama").
+- procedure_name: el nombre EXACTO y LITERAL del ítem o procedimiento tal como \
+está escrito en la imagen, sin agregar palabras (ejemplo: "IGRA", "zapatilla \
+running talla 42").
 - price_question: una pregunta de precio en español usando ese mismo texto, por \
-ejemplo: "¿Cuánto cuesta un examen de IGRA?" o "¿Cuál es el precio de una resección \
-de tumor de mama?". No traduzcas a un sinónimo clínico ni asumas qué examen \
-"similar" podría ser.
+ejemplo: "¿Cuánto cuesta un examen de IGRA?" o "¿Cuánto cuesta una zapatilla \
+running talla 42?". No traduzcas a un sinónimo ni asumas qué ítem "similar" \
+podría ser.
 """
 
 _EXTRACT_JSON_SUFFIX = (
@@ -58,13 +58,13 @@ _EXTRACT_JSON_SUFFIX = (
 
 _VERIFY_PROMPT_TEMPLATE = """\
 Mirá esta imagen otra vez, con atención. ¿Aparece literalmente escrito en la imagen \
-el siguiente texto, o una variante muy cercana del mismo procedimiento/examen?
+el siguiente texto, o una variante muy cercana del mismo ítem/procedimiento?
 
 Texto a verificar: "{claim}"
 
 Marcá text_visible=true SOLO si podés señalar con certeza dónde en la imagen aparece \
 ese texto o uno equivalente. Si no lo ves, no estás seguro, o la imagen no contiene \
-ese texto, marcá text_visible=false. No asumas por contexto médico general — esto es \
+ese texto, marcá text_visible=false. No asumas por contexto general — esto es \
 una verificación de presencia literal del texto, no un juicio de plausibilidad.
 """
 
@@ -242,11 +242,13 @@ async def _structured_or_json(
 
 
 async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
-    """Vision-transcribe a medical order/exam image into a literal price question.
+    """Vision-transcribe a document/product image into a literal price question.
 
     Shared by every channel (Telegram, WhatsApp, ...) that accepts image uploads,
     so the anti-hallucination prompt (literal transcription, explicit uncertainty
-    signal) stays identical across channels instead of drifting.
+    signal) stays identical across channels instead of drifting. Vertical-agnostic
+    by design — the vision model reads whatever business context the photo shows
+    (medical order, clothing tag, shoe box...) without needing per-tenant wording.
 
     Two explicit verification layers, added after a live test showed the
     model confidently fabricating a procedure name on a blank image instead
@@ -321,7 +323,7 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
         if ocr_text and len(ocr_text) > 3:
             logger.info("vision_uncertain fallback_to_ocr text=%s", ocr_text[:50])
             extraction.procedure_name = ocr_text
-            extraction.price_question = f"¿Cuánto cuesta un examen de {ocr_text}?"
+            extraction.price_question = f"¿Cuánto cuesta {ocr_text}?"
             extraction.is_legible = True
         else:
             await _store_vision_result(cache_key, VISION_UNCERTAIN)
