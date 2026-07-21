@@ -11,9 +11,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Install deps — cached layer (only re-runs when pyproject.toml or uv.lock change)
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --dev
-# Fallback: ensure pytest available
-RUN pip install -e .[dev] 2>/dev/null || pip install pytest pytest-asyncio
+RUN uv sync
 
 COPY . .
 RUN chmod +x /app/entrypoint.sh
