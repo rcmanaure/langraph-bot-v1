@@ -18,8 +18,8 @@ All notable changes to this project will be documented in this file.
 - **Telegram webhook**: empty STT transcription result now returns early before graph invocation, matching the WhatsApp channel guard
 - **WhatsApp decrypt**: fallback to raw value on decrypt failure now logs an error (previously silent, making key rotation breakage invisible)
 - **OCR (Docker)**: `tesseract-ocr-spa` added to the image — the OCR fallback was silently running English-only recognition on Spanish medical text with no error, since Tesseract doesn't fail when a requested language pack is missing
-- **OCR (Windows dev)**: vision service now auto-detects a `winget`-installed Tesseract binary and a user-writable tessdata directory when `tesseract` isn't on `PATH`, so local development gets the same Spanish OCR fallback as production
-- **CI**: a real-image end-to-end vision script (root-level, not under `tests/`) was accidentally collected by pytest as an unmarked async test and failing every run; renamed out of pytest's `test_*` discovery pattern since it makes a live billed API call and must never run unattended in CI
+- **OCR (Windows dev)**: vision service now checks the default `winget`-installed Tesseract path (`C:\Program Files\Tesseract-OCR\tesseract.exe`) and a user-writable `~/.tessdata` directory when `tesseract` isn't on `PATH`, so local development can get the same Spanish OCR fallback as production without a system-wide install
+- **CI**: `test_real_images_manual.py`'s async extraction function was accidentally collected by pytest as an unmarked async test and failing every run; renamed the function (not the file, which is a manual script by design) out of pytest's `test_*` discovery pattern since it makes a live billed API call and must never run unattended in CI
 
 ### Changed
 

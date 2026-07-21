@@ -28,7 +28,7 @@ Multi-tenant conversational RAG bot for Telegram (and WhatsApp) built on LangGra
 | Admin UI | Single-page HTML, Alpine.js, Tailwind CDN |
 | Channels | Telegram Bot API, WhatsApp Cloud API (optional) |
 | STT | Groq Whisper (optional, for voice messages) |
-| OCR fallback | Tesseract (`tesseract-ocr` + `tesseract-ocr-spa`, optional — used when the vision model can't read a photo) |
+| OCR fallback | Tesseract (`tesseract-ocr` + `tesseract-ocr-spa`, optional — second pass when a configured vision model marks a photo illegible; does not run if `OPENAI_VISION_MODEL` is unset) |
 | Observability | LangSmith |
 | Infra | Docker Compose + Traefik (production), cloudflared (local dev) |
 | Package manager | uv |
@@ -101,11 +101,7 @@ Open the admin panel and log in with your operator key:
 http://localhost:8000/admin/ui
 ```
 
-The operator key is `SHA256(SECRET_KEY)`. Generate it:
-
-```bash
-echo -n "your-SECRET_KEY-value" | sha256sum
-```
+The operator key is `OPERATOR_TOKEN` if set, otherwise `SECRET_KEY` — used as-is, no hashing.
 
 In the **Tenants** tab, fill in slug, bot token, webhook secret, and expertise area.
 
@@ -186,10 +182,10 @@ GET /health  →  {"status": "ok"}
 
 ## Authentication
 
-**Operator key** — used by the admin panel and `/admin/*` routes:
+**Operator key** — used by the admin panel and `/admin/*` and `/operator/*` routes:
 
 ```
-X-Operator-Key: sha256(SECRET_KEY)
+X-Operator-Key: <OPERATOR_TOKEN, or SECRET_KEY if OPERATOR_TOKEN is unset — no hashing>
 ```
 
 **Tenant API key** — generated on tenant creation (shown once). Used for future per-tenant integrations.
@@ -207,7 +203,8 @@ X-Operator-Key: sha256(SECRET_KEY)
 | `OPENAI_MODEL` | No | Chat model (default: `openrouter/free`) |
 | `OPENAI_FALLBACK_MODEL` | No | Fallback if primary fails |
 | `EMBEDDING_MODEL` | No | Embedding model (default: `openai/text-embedding-3-small`) |
-| `SECRET_KEY` | Yes | Used to derive the operator key |
+| `SECRET_KEY` | Yes | Fallback operator key (used as-is) if `OPERATOR_TOKEN` is unset |
+| `OPERATOR_TOKEN` | No | Operator key for `/admin/*` and `/operator/*` routes (used as-is); falls back to `SECRET_KEY` if unset |
 | `FERNET_KEY` | Yes | Fernet key for encrypting WhatsApp tokens at rest |
 | `TELEGRAM_BOT_TOKEN` | No | Global fallback bot token (per-tenant overrides this) |
 | `LANGCHAIN_API_KEY` | No | LangSmith API key for tracing |
