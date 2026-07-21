@@ -566,7 +566,7 @@ def test_preprocess_downscales_oversized_image():
 
 def test_preprocess_corrects_exif_rotation():
     """EXIF orientation tag rotates on display but not in raw pixel data —
-    left uncorrected, the model reads a sideways image."""
+    left uncorrected, the model reads a sideways image. Small images are upscaled."""
     img = Image.new("RGB", (200, 100), color="blue")  # landscape, unrotated
     exif = img.getexif()
     exif[0x0112] = 6  # "rotate 90 CW to display correctly" -> portrait
@@ -575,18 +575,20 @@ def test_preprocess_corrects_exif_rotation():
 
     processed = vision_module._preprocess_image(buf.getvalue())
     out = Image.open(io.BytesIO(processed))
-    assert out.size == (100, 200)  # rotation baked into pixels
+    # Rotation applied (100x200), then upscaled (min 100px < 600px threshold)
+    assert out.width == 600 and out.height == 1200
 
 
 def test_preprocess_small_image_untouched_dimensions():
-    """An already-small image isn't upscaled or otherwise distorted."""
-    img = Image.new("RGB", (400, 300), color="red")
+    """Images with min dimension < 600px are upscaled to recover messenger compression detail."""
+    img = Image.new("RGB", (400, 300), color="red")  # min=300 < 600, will upscale
     buf = io.BytesIO()
     img.save(buf, format="JPEG")
 
     processed = vision_module._preprocess_image(buf.getvalue())
     out = Image.open(io.BytesIO(processed))
-    assert out.size == (400, 300)
+    # 300px upscaled to 600px (scale = 2)
+    assert out.size == (800, 600)
 
 
 def test_preprocess_falls_back_to_original_on_invalid_image():

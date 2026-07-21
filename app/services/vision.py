@@ -8,7 +8,7 @@ import re
 
 import openai
 from langchain_core.messages import HumanMessage
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -18,6 +18,14 @@ from app.schemas.vision import VisionExtraction, VisionVerification
 from app.services.llm import get_vision_llm
 
 logger = logging.getLogger(__name__)
+
+# OCR optional — graceful fallback if Tesseract not installed
+_TESSERACT_AVAILABLE = False
+try:
+    import pytesseract
+    _TESSERACT_AVAILABLE = True
+except ImportError:
+    logger.info("pytesseract not installed — OCR fallback unavailable")
 
 MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB — shared cap for voice/audio/image downloads
 
@@ -115,23 +123,64 @@ _JPEG_QUALITY = 85
 
 
 def _preprocess_image(img_bytes: bytes) -> bytes:
-    """Bake EXIF rotation into pixels and downscale oversized photos before
-    they're sent to the vision model. Falls back to the original bytes if
-    Pillow can't decode the input (unsupported format, corrupt file) rather
-    than failing the whole request over an optimization."""
+    """Enhance medical order images (WhatsApp/Telegram degraded input).
+
+    Pipeline: EXIF rotation → upscale small images → denoise → contrast boost → downscale.
+    Upscale recovers detail lost in messenger compression. Denoise reduces artifacts.
+    Contrast makes text sharper for vision + OCR. Falls back to original on any error."""
     try:
         img = Image.open(io.BytesIO(img_bytes))
         img = ImageOps.exif_transpose(img)
         if img.mode not in ("RGB", "L"):
             img = img.convert("RGB")
+
+        # Upscale small images (WhatsApp/Telegram compress to ~500-800px; recover detail)
+        min_dim = min(img.size)
+        if min_dim < 600:
+            scale = 600 / min_dim
+            new_size = (int(img.width * scale), int(img.height * scale))
+            img = img.resize(new_size, Image.Resampling.LANCZOS)
+            logger.debug("vision_upscale from=%dpx to=%dpx", min_dim, int(min_dim * scale))
+
+        # Denoise: reduce compression artifacts (slight blur reduces noise)
+        img = img.filter(ImageFilter.MedianFilter(size=3))
+
+        # Contrast boost: make text sharper (critical for OCR + vision)
+        enhancer = ImageEnhance.Contrast(img)
+        img = enhancer.enhance(1.5)  # 50% contrast boost
+
+        # Downscale to model limit (final size)
         if max(img.size) > _MAX_DIMENSION:
             img.thumbnail((_MAX_DIMENSION, _MAX_DIMENSION), Image.Resampling.LANCZOS)
+
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=_JPEG_QUALITY)
         return buf.getvalue()
     except Exception as exc:
         logger.warning("vision_preprocess_failed err=%s using original bytes", exc)
         return img_bytes
+
+
+def _extract_with_ocr(img_bytes: bytes) -> str | None:
+    """Extract procedure name with OCR (fallback for vision confidence boost).
+
+    Returns extracted text or None if Tesseract unavailable.
+    Returns empty string if Tesseract available but found no text."""
+    if not _TESSERACT_AVAILABLE:
+        return None
+
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        text = pytesseract.image_to_string(img, lang="spa+eng")
+        # Extract first meaningful line (procedure name typically appears early)
+        for line in text.split("\n"):
+            line = line.strip()
+            if len(line) > 3:  # Filter noise
+                return line
+        return ""
+    except Exception as exc:
+        logger.warning("ocr_extraction_failed err=%s", exc)
+        return None
 
 
 def _vision_cache_key(model_name: str, caption: str, img_bytes: bytes) -> str:
@@ -267,8 +316,16 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
         return VISION_UNCERTAIN  # transient — not cached, retry may succeed
 
     if not extraction.is_legible or not extraction.price_question:
-        await _store_vision_result(cache_key, VISION_UNCERTAIN)
-        return VISION_UNCERTAIN
+        # Vision uncertain; try OCR fallback if Tesseract available
+        ocr_text = _extract_with_ocr(img_bytes) if _TESSERACT_AVAILABLE else None
+        if ocr_text and len(ocr_text) > 3:
+            logger.info("vision_uncertain fallback_to_ocr text=%s", ocr_text[:50])
+            extraction.procedure_name = ocr_text
+            extraction.price_question = f"¿Cuánto cuesta un examen de {ocr_text}?"
+            extraction.is_legible = True
+        else:
+            await _store_vision_result(cache_key, VISION_UNCERTAIN)
+            return VISION_UNCERTAIN
 
     # Verify the bare literal term, not the formatted question — a document
     # never contains the full interrogative sentence, only the term itself.
