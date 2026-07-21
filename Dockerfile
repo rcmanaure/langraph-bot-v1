@@ -11,7 +11,7 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
 
 # Install deps — cached layer (only re-runs when pyproject.toml or uv.lock change)
 COPY pyproject.toml uv.lock* ./
-RUN uv sync --frozen --no-dev
+RUN uv sync --all-extras
 
 COPY . .
 RUN chmod +x /app/entrypoint.sh
