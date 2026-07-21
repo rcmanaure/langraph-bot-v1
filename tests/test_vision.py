@@ -658,7 +658,7 @@ async def test_ocr_fallback_when_vision_illegible():
         result = await extract_procedure_query(b"fake image bytes", "")
 
     # OCR fallback generated price question (verified)
-    assert result == "¿Cuánto cuesta un examen de IGRA?"
+    assert result == "¿Cuánto cuesta IGRA?"
 
 
 @pytest.mark.asyncio
