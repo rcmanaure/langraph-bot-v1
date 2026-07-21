@@ -28,6 +28,7 @@ Multi-tenant conversational RAG bot for Telegram (and WhatsApp) built on LangGra
 | Admin UI | Single-page HTML, Alpine.js, Tailwind CDN |
 | Channels | Telegram Bot API, WhatsApp Cloud API (optional) |
 | STT | Groq Whisper (optional, for voice messages) |
+| OCR fallback | Tesseract (`tesseract-ocr` + `tesseract-ocr-spa`, optional — used when the vision model can't read a photo) |
 | Observability | LangSmith |
 | Infra | Docker Compose + Traefik (production), cloudflared (local dev) |
 | Package manager | uv |
@@ -252,6 +253,9 @@ uv run pytest -m "not eval" --tb=short -q
 | `test_security.py` | Injection scanner, rate limiting |
 | `test_scheduler.py` | APScheduler interrupt expiry |
 | `test_evals.py` | LLM quality evals (slow, requires API keys) |
+| `test_vision.py` | Vision extraction: structured-output/JSON-fallback, two-pass verification, OCR fallback, caching, rate-limit retry |
+| `test_medical_orders_real.py` | Image preprocessing against real biopsy order photos (skips if not present) |
+| `test_integration_ocr_medical_data.py` | OCR stack integration against the medical catalog |
 
 ---
 
