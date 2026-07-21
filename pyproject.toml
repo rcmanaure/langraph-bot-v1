@@ -30,6 +30,7 @@ dependencies = [
     "filetype>=1.2.0",
     "tiktoken>=0.8.0",
     "pillow>=10.4.0",
+    "pytesseract>=0.3.13",
     # Security / crypto
     "bcrypt>=4.0.0",
     "cryptography>=42.0.0",
