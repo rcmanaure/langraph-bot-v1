@@ -2,6 +2,7 @@
 Integration test: OCR stack with real medical data + real images.
 Loads sp-diagnostico-histologico.jsonl, tests extraction accuracy.
 """
+import io
 import json
 import time
 from pathlib import Path
@@ -9,10 +10,8 @@ from typing import Optional
 
 import pytest
 from PIL import Image
-import io
 
 import app.services.vision as vision_module
-
 
 # Test data paths
 MEDICAL_DATA_PATH = Path("/app/medical_data/sp-diagnostico-histologico.jsonl")
@@ -134,8 +133,8 @@ class TestIntegrationOCR:
         ]
 
         for ocr_text, expected in test_extractions:
-            lines = [l.strip() for l in ocr_text.split("\n") if l.strip()]
-            extracted = next((l for l in lines if len(l) > 3), None)
+            lines = [line.strip() for line in ocr_text.split("\n") if line.strip()]
+            extracted = next((line for line in lines if len(line) > 3), None)
             assert extracted == expected, f"Expected '{expected}', got '{extracted}'"
 
 

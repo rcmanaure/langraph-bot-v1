@@ -11,7 +11,6 @@ from PIL import Image
 
 import app.services.vision as vision_module
 
-
 REAL_IMAGES = {
     "biopsy_1": Path("C:/Users/rcman/Downloads/WhatsApp Image 2026-07-21 at 9.48.45 AM.jpeg"),
     "biopsy_2": Path("C:/Users/rcman/Downloads/WhatsApp Image 2026-07-21 at 11.42.00 AM.jpeg"),
@@ -69,8 +68,8 @@ def test_ocr_extraction_would_handle_handwritten():
     fake_ocr_text = "Histerectomia abdominal radical\nBiopsia de tejido endometrial"
 
     # Extract first meaningful line (>3 chars)
-    lines = [l.strip() for l in fake_ocr_text.split("\n") if l.strip()]
-    procedure = next((l for l in lines if len(l) > 3), None)
+    lines = [line.strip() for line in fake_ocr_text.split("\n") if line.strip()]
+    procedure = next((line for line in lines if len(line) > 3), None)
 
     assert procedure == "Histerectomia abdominal radical"
     assert len(procedure) > 3

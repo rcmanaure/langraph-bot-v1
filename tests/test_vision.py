@@ -683,15 +683,15 @@ def test_ocr_extraction_returns_first_meaningful_line():
     """OCR extraction skips noise, returns first line >3 chars."""
     fake_ocr_text = "\n\nIGRA TEST\nOther stuff..."
     # _extract_with_ocr() uses pytesseract if available; simulate it
-    lines = [l.strip() for l in fake_ocr_text.split("\n") if l.strip()]
-    first = next((l for l in lines if len(l) > 3), "")
+    lines = [line.strip() for line in fake_ocr_text.split("\n") if line.strip()]
+    first = next((line for line in lines if len(line) > 3), "")
     assert first == "IGRA TEST"
 
 
 def test_ocr_extraction_ignores_short_lines():
     """OCR skips noise lines (<3 chars)."""
     fake_ocr_text = "XX\nIGRA\nYYY"
-    lines = [l.strip() for l in fake_ocr_text.split("\n") if l.strip()]
-    first = next((l for l in lines if len(l) > 3), "")
+    lines = [line.strip() for line in fake_ocr_text.split("\n") if line.strip()]
+    first = next((line for line in lines if len(line) > 3), "")
     # "XX" and "YYY" are <4 chars (len >3 means >3, so >=4), "IGRA" is 4 chars
     assert first == "IGRA"
