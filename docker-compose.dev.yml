@@ -1,0 +1,25 @@
+services:
+  api:
+    build: .
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["/app/.venv/bin/python -m pytest tests/test_integration_ocr_medical_data.py -v --tb=short || /app/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    environment:
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - LOG_LEVEL=info
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health')\" || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 15s
+    networks:
+      - lgbot-dev
+
+networks:
+  lgbot-dev:
+    driver: bridge
