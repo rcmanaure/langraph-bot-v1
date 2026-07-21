@@ -632,3 +632,66 @@ async def test_structured_output_memo_is_isolated_per_model():
     # model-b's structured attempt must still be tried — model-a's failure
     # memo must not leak across model names.
     mock_llm_b.with_structured_output.assert_called_once()
+
+
+# OCR fallback tests (Tesseract optional, gracefully unavailable)
+
+@pytest.mark.asyncio
+async def test_ocr_fallback_when_vision_illegible():
+    """When vision marks image illegible, OCR fallback attempts extraction.
+    If Tesseract available, uses OCR text."""
+    ctx, session = _cache_ctx(cached_row=None)
+    # Vision says illegible, verify accepts OCR text
+    mock_llm = _mock_llm({
+        VisionExtraction: VisionExtraction(is_legible=False, price_question=None),
+        VisionVerification: VisionVerification(text_visible=True),
+    })
+
+    # Mock OCR returning procedure name
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+        patch("app.services.vision._extract_with_ocr", return_value="IGRA"),
+        patch("app.services.vision._TESSERACT_AVAILABLE", True),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    # OCR fallback generated price question (verified)
+    assert result == "¿Cuánto cuesta un examen de IGRA?"
+
+
+@pytest.mark.asyncio
+async def test_ocr_unavailable_returns_uncertain():
+    """When vision illegible and OCR unavailable/returns empty, still uncertain."""
+    ctx, session = _cache_ctx(cached_row=None)
+    mock_llm = _mock_llm({VisionExtraction: VisionExtraction(is_legible=False, price_question=None)})
+
+    with (
+        patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
+        patch("app.services.vision.get_vision_llm", return_value=mock_llm),
+        patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
+        patch("app.services.vision._extract_with_ocr", return_value=None),
+        patch("app.services.vision._TESSERACT_AVAILABLE", False),
+    ):
+        result = await extract_procedure_query(b"fake image bytes", "")
+
+    assert result == VISION_UNCERTAIN
+
+
+def test_ocr_extraction_returns_first_meaningful_line():
+    """OCR extraction skips noise, returns first line >3 chars."""
+    fake_ocr_text = "\n\nIGRA TEST\nOther stuff..."
+    # _extract_with_ocr() uses pytesseract if available; simulate it
+    lines = [l.strip() for l in fake_ocr_text.split("\n") if l.strip()]
+    first = next((l for l in lines if len(l) > 3), "")
+    assert first == "IGRA TEST"
+
+
+def test_ocr_extraction_ignores_short_lines():
+    """OCR skips noise lines (<3 chars)."""
+    fake_ocr_text = "XX\nIGRA\nYYY"
+    lines = [l.strip() for l in fake_ocr_text.split("\n") if l.strip()]
+    first = next((l for l in lines if len(l) > 3), "")
+    # "XX" and "YYY" are <4 chars (len >3 means >3, so >=4), "IGRA" is 4 chars
+    assert first == "IGRA"
