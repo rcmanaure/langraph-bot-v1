@@ -1,4 +1,3 @@
-import asyncio
 import base64
 import hashlib
 import io
@@ -15,7 +14,7 @@ from sqlalchemy import text
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.schemas.vision import VisionExtraction, VisionVerification
-from app.services.llm import get_vision_llm
+from app.services.llm import call_with_retry, get_vision_llm
 
 logger = logging.getLogger(__name__)
 
@@ -86,24 +85,8 @@ _structured_output_ok: dict[str, bool] = {}
 # is transient (the request itself was fine, just mistimed), unlike a 400/404
 # capability failure, so it's worth a couple of short backoff retries instead
 # of giving up immediately and asking the user to retype their question.
-_RATE_LIMIT_MAX_RETRIES = 2
-_RATE_LIMIT_BASE_DELAY = 1.5  # seconds
-
-
 def _is_rate_limited(exc: BaseException) -> bool:
     return isinstance(exc, openai.RateLimitError) or getattr(exc, "status_code", None) == 429
-
-
-async def _call_with_rate_limit_retry(fn, *args, **kwargs):
-    for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
-        try:
-            return await fn(*args, **kwargs)
-        except Exception as exc:
-            if not _is_rate_limited(exc) or attempt == _RATE_LIMIT_MAX_RETRIES:
-                raise
-            delay = _RATE_LIMIT_BASE_DELAY * (2**attempt)
-            logger.warning("vision_rate_limited attempt=%d retrying_in=%.1fs", attempt + 1, delay)
-            await asyncio.sleep(delay)
 
 
 # Phone photos routinely arrive at 3000-4000px on the long side, and/or
@@ -259,8 +242,9 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
     prompt = f"{caption}\n\n{_VISION_EXTRACT_PROMPT}" if caption else _VISION_EXTRACT_PROMPT
 
     try:
-        extraction: VisionExtraction = await _call_with_rate_limit_retry(
-            _structured_or_json, llm, model_name, prompt, img_b64, VisionExtraction, _EXTRACT_JSON_SUFFIX
+        extraction: VisionExtraction = await call_with_retry(
+            _structured_or_json, llm, model_name, prompt, img_b64, VisionExtraction, _EXTRACT_JSON_SUFFIX,
+            is_retryable=_is_rate_limited,
         )
     except Exception as exc:
         logger.warning("vision_extraction_failed=%s defaulting to uncertain", exc)
@@ -275,8 +259,9 @@ async def extract_procedure_query(img_bytes: bytes, caption: str) -> str:
     verify_claim = extraction.procedure_name or extraction.price_question
     verify_prompt = _VERIFY_PROMPT_TEMPLATE.format(claim=verify_claim)
     try:
-        verification: VisionVerification = await _call_with_rate_limit_retry(
-            _structured_or_json, llm, model_name, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX
+        verification: VisionVerification = await call_with_retry(
+            _structured_or_json, llm, model_name, verify_prompt, img_b64, VisionVerification, _VERIFY_JSON_SUFFIX,
+            is_retryable=_is_rate_limited,
         )
     except Exception as exc:
         logger.warning("vision_verification_failed=%s defaulting to uncertain", exc)

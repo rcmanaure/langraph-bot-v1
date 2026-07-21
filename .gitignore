@@ -221,3 +221,7 @@ __marimo__/
 graphify-out
 CLAUDE.md
 sp-diagnostico-histologico.md
+skills-lock.json
+uv.lock
+.agents
+alembic

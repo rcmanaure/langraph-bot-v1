@@ -15,8 +15,9 @@ from app.auth import verify_operator_key
 from app.channels.telegram import delete_webhook, get_webhook_info, set_webhook
 from app.config import settings
 from app.db import AsyncSessionLocal
-from app.models import IndexJob, IndexJobStatus, Tenant
+from app.models import IndexJob, IndexJobStatus, PatientIndex, Tenant
 from app.policies import TenantPolicy
+from app.services import google_oauth
 from app.services.indexer import run_index_job
 
 _bg_tasks: set[asyncio.Task] = set()
@@ -286,6 +287,102 @@ async def regen_api_key(slug: str, _: None = Depends(verify_operator_key)):
 
     # Return the raw key exactly once — it is never stored and cannot be recovered.
     return {"api_key": raw_key}
+
+
+# ── Google OAuth (Gmail/Drive patient-results search) ─────────────────────────
+
+@router.get("/google/connect/{slug}")
+async def google_connect(slug: str, _: None = Depends(verify_operator_key)):
+    """Returns the Google consent URL (with a signed, single-use state — D8)
+    for the admin panel's JS to navigate the browser to. Not a redirect
+    itself: the panel calls this via fetch() (authenticated with the header),
+    then does window.location = authorization_url — Google's own redirect
+    can't carry our X-Operator-Key header, hence the signed state instead."""
+    async with AsyncSessionLocal() as db:
+        exists = (await db.execute(
+            select(Tenant.id).where(Tenant.slug == slug)
+        )).scalar_one_or_none()
+    if not exists:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+    redirect_uri = f"https://{settings.app_domain}/admin/google/callback"
+    authorization_url = google_oauth.get_authorization_url(slug, redirect_uri)
+    return {"authorization_url": authorization_url}
+
+
+@router.get("/google/callback", include_in_schema=False)
+async def google_callback(code: str, state: str):
+    """No verify_operator_key here — Google's redirect can't carry that
+    header. Identity is proven by the signed state instead (D8)."""
+    try:
+        tenant_slug = google_oauth.verify_state(state)
+    except google_oauth.OAuthError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid connect link: {exc}") from exc
+
+    redirect_uri = f"https://{settings.app_domain}/admin/google/callback"
+    try:
+        credentials = google_oauth.exchange_code(code, redirect_uri)
+    except google_oauth.OAuthError as exc:
+        raise HTTPException(status_code=400, detail=f"Google rejected the code: {exc}") from exc
+
+    connected_email = google_oauth.get_verified_email(credentials)
+
+    async with AsyncSessionLocal() as db:
+        t = (await db.execute(select(Tenant).where(Tenant.slug == tenant_slug))).scalar_one_or_none()
+        if not t:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        t.google_refresh_token = credentials.refresh_token
+        t.google_connected_email = connected_email
+        await db.commit()
+
+    return {"status": "connected", "tenant": tenant_slug, "google_connected_email": connected_email}
+
+
+# ── Patient index (T3b) ────────────────────────────────────────────────────────
+
+class PatientIndexCreate(BaseModel):
+    patient_name: str
+    dni_or_dob: str
+
+
+@router.post("/tenants/{slug}/patient-index", status_code=201)
+async def create_patient_index_entry(
+    slug: str, body: PatientIndexCreate, _: None = Depends(verify_operator_key)
+):
+    async with AsyncSessionLocal() as db:
+        tenant_id = (await db.execute(
+            select(Tenant.id).where(Tenant.slug == slug)
+        )).scalar_one_or_none()
+        if not tenant_id:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        entry = PatientIndex(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            patient_name=body.patient_name,
+            dni_or_dob=body.dni_or_dob,
+        )
+        db.add(entry)
+        await db.commit()
+        await db.refresh(entry)
+
+    return {"id": str(entry.id), "patient_name": entry.patient_name, "dni_or_dob": entry.dni_or_dob}
+
+
+@router.get("/tenants/{slug}/patient-index")
+async def list_patient_index_entries(slug: str, _: None = Depends(verify_operator_key)):
+    async with AsyncSessionLocal() as db:
+        rows = await db.execute(
+            text("""
+                SELECT pi.id, pi.patient_name, pi.dni_or_dob, pi.created_at
+                  FROM patient_index pi
+                  JOIN tenants t ON t.id = pi.tenant_id
+                 WHERE t.slug = :slug
+                 ORDER BY pi.patient_name
+            """),
+            {"slug": slug},
+        )
+        return [dict(r._mapping) for r in rows.fetchall()]
 
 
 # ── Index jobs ────────────────────────────────────────────────────────────────

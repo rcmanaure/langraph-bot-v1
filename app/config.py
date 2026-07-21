@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     csrf_secret: str = ""
     operator_token: str = ""  # if set, used for operator/admin auth instead of secret_key
 
+    # Google OAuth (Gmail/Drive patient-results search)
+    google_client_id: str = ""
+    google_client_secret: str = ""
+
     # LangSmith
     langchain_tracing_v2: bool = False
     langchain_api_key: str = ""

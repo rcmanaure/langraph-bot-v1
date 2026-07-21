@@ -492,7 +492,7 @@ async def test_rate_limited_structured_call_retries_then_succeeds():
     with (
         patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
         patch("app.services.vision.get_vision_llm", return_value=mock_llm),
-        patch("app.services.vision.asyncio.sleep", new_callable=AsyncMock),
+        patch("app.services.llm.asyncio.sleep", new_callable=AsyncMock),
     ):
         result = await extract_procedure_query(b"fake image bytes", "")
 
@@ -517,7 +517,7 @@ async def test_rate_limit_exhausted_defaults_to_uncertain_not_cached():
         patch("app.services.vision.settings.openai_vision_model", "some-vision-model"),
         patch("app.services.vision.get_vision_llm", return_value=mock_llm),
         patch("app.services.vision.AsyncSessionLocal", return_value=ctx),
-        patch("app.services.vision.asyncio.sleep", new_callable=AsyncMock),
+        patch("app.services.llm.asyncio.sleep", new_callable=AsyncMock),
     ):
         result = await extract_procedure_query(b"fake image bytes", "")
 

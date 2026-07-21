@@ -10,7 +10,11 @@ def _fernet() -> Fernet | None:
 
 def encrypt_value(value: str) -> str:
     f = _fernet()
-    return f.encrypt(value.encode()).decode() if f else value
+    if not f:
+        raise RuntimeError(
+            "FERNET_KEY is not configured — refusing to store a secret in plaintext"
+        )
+    return f.encrypt(value.encode()).decode()
 
 
 def decrypt_value(value: str) -> str:

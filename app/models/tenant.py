@@ -32,6 +32,20 @@ class Tenant(Base):
     # Portal login
     portal_password_hash = Column(String(128), nullable=True)
 
+    # Google OAuth (Gmail/Drive patient-results search)
+    _google_refresh_token = Column("google_refresh_token", Text, nullable=True)
+    google_connected_email = Column(String(255), nullable=True)
+
+    @hybrid_property
+    def google_refresh_token(self):
+        from app.crypto import decrypt_value
+        return decrypt_value(self._google_refresh_token) if self._google_refresh_token else None
+
+    @google_refresh_token.setter
+    def google_refresh_token(self, value):
+        from app.crypto import encrypt_value
+        self._google_refresh_token = encrypt_value(value) if value else None
+
     @hybrid_property
     def wa_access_token(self):
         from app.crypto import decrypt_value
