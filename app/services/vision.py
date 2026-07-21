@@ -5,6 +5,8 @@ import io
 import json
 import logging
 import re
+import shutil
+from pathlib import Path
 
 import openai
 from langchain_core.messages import HumanMessage
@@ -26,6 +28,27 @@ try:
     _TESSERACT_AVAILABLE = True
 except ImportError:
     logger.info("pytesseract not installed — OCR fallback unavailable")
+
+# ponytail: Windows dev machines commonly get the tesseract binary via
+# winget/choco with neither the exe on PATH nor the spa language pack
+# bundled (apt's tesseract-ocr-spa has no Windows equivalent package) —
+# without this, local dev silently runs English-only OCR on Spanish medical
+# text and gets garbage. Docker/production is unaffected: apt puts the
+# binary on PATH and tesseract-ocr-spa ships the language data directly.
+# Upgrade path: if a future base install bundles spa by default, this
+# becomes a no-op (shutil.which finds it, override stays empty).
+_TESSDATA_OVERRIDE = ""
+if _TESSERACT_AVAILABLE and not shutil.which("tesseract"):
+    _win_tesseract = Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe")
+    if _win_tesseract.exists():
+        pytesseract.pytesseract.tesseract_cmd = str(_win_tesseract)
+        _user_tessdata = Path.home() / ".tessdata"
+        if (_user_tessdata / "spa.traineddata").exists():
+            # No quotes: pytesseract's config parser uses shlex.split(config,
+            # posix=False) on Windows, which does not strip quote chars the
+            # way posix shlex does — quoting here embeds literal quotes into
+            # the path tesseract receives and breaks --tessdata-dir entirely.
+            _TESSDATA_OVERRIDE = f"--tessdata-dir {_user_tessdata}"
 
 MAX_MEDIA_BYTES = 10 * 1024 * 1024  # 10 MB — shared cap for voice/audio/image downloads
 
@@ -171,7 +194,7 @@ def _extract_with_ocr(img_bytes: bytes) -> str | None:
 
     try:
         img = Image.open(io.BytesIO(img_bytes))
-        text = pytesseract.image_to_string(img, lang="spa+eng")
+        text = pytesseract.image_to_string(img, lang="spa+eng", config=_TESSDATA_OVERRIDE)
         # Extract first meaningful line (procedure name typically appears early)
         for line in text.split("\n"):
             line = line.strip()

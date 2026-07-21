@@ -92,8 +92,16 @@ def test_ocr_text_extraction():
         print(f"  Result: OK\n")
 
 
-async def test_real_extraction_end_to_end():
+async def run_real_extraction_end_to_end():
     """Call the real vision LLM (no mocks) against real biopsy request photos.
+
+    Named without a `test_` prefix on purpose: this makes a real, billed LLM
+    call and pytest's default discovery has no `testpaths` restriction, so a
+    `test_`-prefixed async function here gets silently collected and run
+    unattended in CI (which does have OPENROUTER_API_KEY configured) — with
+    no asyncio plugin loaded for this root-level manual script, that failed
+    outright. The fix is exclusion from collection, not adding a marker: a
+    live paid API call must never run unattended in automated CI regardless.
 
     Validates the generalized prompt on actual hard cases: handwritten,
     photographed on a bed/table/desk, varying legibility. Ground truth isn't
@@ -125,5 +133,5 @@ async def test_real_extraction_end_to_end():
 if __name__ == "__main__":
     test_preprocess_real_images()
     test_ocr_text_extraction()
-    asyncio.run(test_real_extraction_end_to_end())
+    asyncio.run(run_real_extraction_end_to_end())
     print("\n=== All tests PASSED ===\n")
