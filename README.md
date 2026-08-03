@@ -92,6 +92,8 @@ Telegram requires a public HTTPS URL. On Windows, `scripts\start-tunnel.ps1` sta
 
 On Linux/macOS, start cloudflared manually and then follow step 5 below to register the webhook.
 
+> **Alternative:** `docker-compose.dev.yml` (a separate dev-oriented compose file, live-reload volume mount) bundles `cloudflared-api` and `cloudflared-phoenix` services that start automatically with `docker compose -f docker-compose.dev.yml up -d` — read the tunnel URL from `docker compose -f docker-compose.dev.yml logs cloudflared-api`, no manual cloudflared step needed. Still register the webhook manually per step 5.
+
 ### 4. Create a tenant
 
 Open the admin panel and log in with your operator key:
@@ -207,6 +209,7 @@ X-Operator-Key: <SECRET_KEY value, raw — not hashed>
 | `FERNET_KEY` | Yes | Fernet key for encrypting WhatsApp tokens at rest |
 | `TELEGRAM_BOT_TOKEN` | No | Global fallback bot token (per-tenant overrides this) |
 | `OBSERVABILITY_ENABLED` | No | Turn on Phoenix LLM tracing (default `false`) |
+| `PHOENIX_COLLECTOR_ENDPOINT` | Only if `OBSERVABILITY_ENABLED=true` | Where traces are sent, e.g. `http://phoenix:4317` (the Docker Compose service name, not `localhost` — from inside the `api` container, `localhost` is itself, not the `phoenix` container) |
 | `PHOENIX_SECRET` | Only if `OBSERVABILITY_ENABLED=true` in prod | Phoenix auth secret — generate once, don't commit real values |
 | `PHOENIX_ADMIN_PASSWORD` | Only if `OBSERVABILITY_ENABLED=true` in prod | Phoenix admin UI password |
 | `GROQ_API_KEY` | No | Groq API key for voice transcription |
@@ -250,6 +253,8 @@ uv run pytest -m "not eval" --tb=short -q
 | `test_security.py` | Injection scanner, rate limiting |
 | `test_scheduler.py` | APScheduler interrupt expiry |
 | `test_evals.py` | LLM quality evals (slow, requires API keys) |
+| `test_observability.py` | Phoenix tracing setup (mocked) — soft-fail on unreachable Phoenix, hard-fail on confirmed redaction leak |
+| `test_observability_integration.py` | Phoenix tracing against a live instance — auto-skips if unreachable |
 
 ---
 
