@@ -209,7 +209,7 @@ X-Operator-Key: <SECRET_KEY value, raw — not hashed>
 | `FERNET_KEY` | Yes | Fernet key for encrypting WhatsApp tokens at rest |
 | `TELEGRAM_BOT_TOKEN` | No | Global fallback bot token (per-tenant overrides this) |
 | `OBSERVABILITY_ENABLED` | No | Turn on Phoenix LLM tracing (default `false`) |
-| `PHOENIX_COLLECTOR_ENDPOINT` | Only if `OBSERVABILITY_ENABLED=true` | Where traces are sent, e.g. `http://phoenix:4317` (the Docker Compose service name, not `localhost` — from inside the `api` container, `localhost` is itself, not the `phoenix` container) |
+| `PHOENIX_COLLECTOR_ENDPOINT` | No — already set in both compose files | Where traces are sent, `http://phoenix:4317` (the Docker Compose service name, not `localhost` — from inside the `api` container, `localhost` is itself, not the `phoenix` container) |
 | `PHOENIX_SECRET` | Only if `OBSERVABILITY_ENABLED=true` in prod | Phoenix auth secret — generate once, don't commit real values |
 | `PHOENIX_ADMIN_PASSWORD` | Only if `OBSERVABILITY_ENABLED=true` in prod | Phoenix admin UI password |
 | `GROQ_API_KEY` | No | Groq API key for voice transcription |

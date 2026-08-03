@@ -32,6 +32,15 @@ services:
       - VISION_CACHE_ENABLED=false
       - EMBEDDING_CACHE_ENABLED=false
       - RETRIEVE_CACHE_ENABLED=false
+      # Hardcoded here rather than left to .env: it's always phoenix:4317
+      # within this compose file's own network regardless of deployment,
+      # so it's infra wiring, not a secret -- .env.example documented it as
+      # something the operator must set manually, but that's a footgun
+      # (found in /document-release doc review: this line was simply
+      # missing, and OBSERVABILITY_ENABLED=true without it means the
+      # api container tries localhost:4317 -- itself, not the phoenix
+      # container -- so tracing silently never reaches Phoenix).
+      - PHOENIX_COLLECTOR_ENDPOINT=http://phoenix:4317
     ports:
       - "8000:8000"
  #   depends_on:
