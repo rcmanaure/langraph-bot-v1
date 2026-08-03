@@ -28,7 +28,7 @@ Multi-tenant conversational RAG bot for Telegram (and WhatsApp) built on LangGra
 | Admin UI | Single-page HTML, Alpine.js, Tailwind CDN |
 | Channels | Telegram Bot API, WhatsApp Cloud API (optional) |
 | STT | Groq Whisper (optional, for voice messages) |
-| Observability | LangSmith |
+| Observability | Phoenix (LLM tracing, self-hosted) |
 | Infra | Docker Compose + Traefik (production), cloudflared (local dev) |
 | Package manager | uv |
 
@@ -206,8 +206,9 @@ X-Operator-Key: <SECRET_KEY value, raw — not hashed>
 | `SECRET_KEY` | Yes | Used to derive the operator key |
 | `FERNET_KEY` | Yes | Fernet key for encrypting WhatsApp tokens at rest |
 | `TELEGRAM_BOT_TOKEN` | No | Global fallback bot token (per-tenant overrides this) |
-| `LANGCHAIN_API_KEY` | No | LangSmith API key for tracing |
-| `LANGCHAIN_PROJECT` | No | LangSmith project name |
+| `OBSERVABILITY_ENABLED` | No | Turn on Phoenix LLM tracing (default `false`) |
+| `PHOENIX_SECRET` | Only if `OBSERVABILITY_ENABLED=true` in prod | Phoenix auth secret — generate once, don't commit real values |
+| `PHOENIX_ADMIN_PASSWORD` | Only if `OBSERVABILITY_ENABLED=true` in prod | Phoenix admin UI password |
 | `GROQ_API_KEY` | No | Groq API key for voice transcription |
 | `OPENAI_VISION_MODEL` | No | Vision model for photo messages on Telegram (unset disables photo support) |
 | `TRAEFIK_HOST` | No | Production domain (e.g. `bot.yourdomain.com`) |

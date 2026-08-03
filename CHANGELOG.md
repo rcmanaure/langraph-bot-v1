@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.0.2.0] - 2026-08-03
+
+### Added
+
+- **LLM observability via Phoenix**: self-hosted, open-source LLM tracing replaces LangSmith. Set `OBSERVABILITY_ENABLED=true` to turn it on (off by default); a boot-time self-check confirms message content is actually redacted from traces before tracing goes live against real traffic, and stays soft (logs a warning, keeps booting) if Phoenix simply isn't reachable
+- **Cloudflare Quick Tunnels wired into `docker-compose.dev.yml`**: `cloudflared-api` and `cloudflared-phoenix` services auto-expose the local API and Phoenix UI over a `trycloudflare.com` URL — read it from `docker compose logs cloudflared-api` — no separate manual tunnel step needed for dev
+
+### Fixed
+
+- **Dev environment**: `docker-compose.dev.yml`'s `api` service skipped `alembic upgrade head` (it overrode the image's normal startup command), so a fresh dev database crashed on first boot with `UndefinedTableError`. Migrations now run before the server starts, matching production behavior
+- **Admin panel**: the operator-key instructions in the README told you to SHA256 your `SECRET_KEY` before pasting it in — the server actually expects the raw value. Docs corrected; this was blocking first-time login for anyone following the README exactly
+- **Admin panel**: tenant slugs had no format validation, so a slug like `"My Tenant!"` could be created successfully and then silently fail Telegram webhook registration (the slug is used unescaped in the webhook URL). Slugs are now restricted to lowercase letters, digits, and hyphens
+- **Telegram webhook**: a malformed or non-object JSON body (with a valid tenant + secret) returned HTTP 500 instead of `{"ok": true}`, which meant Telegram would retry the same bad update forever instead of it being dropped like every other invalid-update case
+- **Phoenix tracing redaction gap**: `OPENINFERENCE_HIDE_INPUT_TEXT`/`HIDE_OUTPUT_TEXT` alone didn't mask the raw serialized `input.value`/`output.value` span attributes populated on LLM-kind spans, leaking full unmasked content there even with redaction "on". `HIDE_INPUTS`/`HIDE_OUTPUTS` added to close it
+- **Phoenix version pin**: the pinned Phoenix server image was too old for `get_spans` queries used in integration tests; re-pinned to `13.15.0` in both compose files
+
+### Changed
+
+- Observability backend switched from LangSmith to Phoenix — `LANGCHAIN_API_KEY`/`LANGCHAIN_PROJECT`/`LANGSMITH_HIDE_INPUTS`/`LANGSMITH_HIDE_OUTPUTS` removed from `.env.example` and settings; replaced by `OBSERVABILITY_ENABLED`, `PHOENIX_SECRET`, `PHOENIX_ADMIN_PASSWORD`
+
 ## [0.0.1.0] - 2026-07-01
 
 ### Fixed
